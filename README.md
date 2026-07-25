@@ -39,7 +39,14 @@ src/
 ### Generic Filesystem I/O Monitoring
 
 - **iosnoop** — Trace filesystem I/O syscalls across all filesystems with optional mount point filtering.
-  - Traces common filesystem syscalls: open, openat, read, write, close, stat, lstat
+  - Traces comprehensive filesystem syscalls:
+    - **File operations**: open, openat, read, write, close
+    - **File metadata**: stat, lstat, fstat, chmod, fchmod, chown, fchown, truncate, ftruncate
+    - **Directory operations**: mkdir, mkdirat, rmdir
+    - **File deletion**: unlink, unlinkat
+    - **File renaming**: rename, renameat, renameat2
+    - **Link operations**: link, linkat, symlink, symlinkat, readlink, readlinkat
+    - **Filesystem operations**: mount, umount2
   - Captures file paths, process information (PID, UID, GID, comm), and syscall return values
   - Optional filtering by mount point (device-level filtering for efficiency)
   - eBPF-based syscall tracepoint instrumentation (sys_enter/sys_exit)
@@ -104,17 +111,23 @@ sudo ./src/bin/iosnoop -m /tmp -d 60            # trace /tmp mount for 60 second
 #### Output Format
 
 ```
-TIME     PID    COMM             TYPE     RET PATH
-14:23:45 12345  bash             OPEN       3 /tmp/testfile.txt
-14:23:45 12345  bash             READ     512 read
-14:23:45 12345  bash             WRITE    512 write
-14:23:45 12345  bash             CLOSE      0 close
+TIME     PID    COMM             TYPE       RET PATH
+14:23:45 12345  bash             OPEN         3 /tmp/testfile.txt
+14:23:45 12345  bash             READ       512 read
+14:23:45 12345  bash             WRITE      512 write
+14:23:45 12345  bash             MKDIR        0 /tmp/newdir
+14:23:45 12345  bash             UNLINK       0 /tmp/oldfile.txt
+14:23:45 12345  bash             MOUNT        0 /mnt/share
+14:23:45 12345  bash             CHMOD        0 chmod
+14:23:45 12345  bash             RENAME       0 /tmp/old.txt
+14:23:45 12345  bash             READLINK    12 /etc/passwd
+14:23:45 12345  bash             CLOSE        0 close
 ```
 
 **Columns:**
 - **TIME**: Timestamp (HH:MM:SS)
 - **PID**: Process ID
 - **COMM**: Command name (truncated to 16 chars)
-- **TYPE**: Syscall type (OPEN, READ, WRITE, CLOSE, STAT, LSTAT)
-- **RET**: Syscall return value (bytes for read/write, fd for open, 0 for success on close)
-- **PATH**: File path (for open/stat/lstat) or syscall name (for read/write/close)
+- **TYPE**: Syscall type (see Syscalls Traced list above)
+- **RET**: Syscall return value (bytes for read/write, fd for open, 0 for success on directory ops)
+- **PATH**: File path (for path-based syscalls) or syscall name (for fd-based syscalls like fstat, fchmod, etc.)

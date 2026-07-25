@@ -17,6 +17,29 @@
 #define IO_CLOSE	4
 #define IO_STAT		5
 #define IO_LSTAT	6
+#define IO_FSTAT	7
+#define IO_MKDIR	8
+#define IO_MKDIRAT	9
+#define IO_RMDIR	10
+#define IO_UNLINK	11
+#define IO_UNLINKAT	12
+#define IO_RENAME	13
+#define IO_RENAMEAT	14
+#define IO_RENAMEAT2	15
+#define IO_MOUNT	16
+#define IO_UMOUNT2	17
+#define IO_CHMOD	18
+#define IO_FCHMOD	19
+#define IO_CHOWN	20
+#define IO_FCHOWN	21
+#define IO_TRUNCATE	22
+#define IO_FTRUNCATE	23
+#define IO_LINK		24
+#define IO_LINKAT	25
+#define IO_SYMLINK	26
+#define IO_SYMLINKAT	27
+#define IO_READLINK	28
+#define IO_READLINKAT	29
 
 struct io_event {
 	__u64 ts;
@@ -111,6 +134,52 @@ const char *io_type_str(int type)
 		return "STAT";
 	case IO_LSTAT:
 		return "LSTAT";
+	case IO_FSTAT:
+		return "FSTAT";
+	case IO_MKDIR:
+		return "MKDIR";
+	case IO_MKDIRAT:
+		return "MKDIRAT";
+	case IO_RMDIR:
+		return "RMDIR";
+	case IO_UNLINK:
+		return "UNLINK";
+	case IO_UNLINKAT:
+		return "UNLINKAT";
+	case IO_RENAME:
+		return "RENAME";
+	case IO_RENAMEAT:
+		return "RENAMEAT";
+	case IO_RENAMEAT2:
+		return "RENAMEAT2";
+	case IO_MOUNT:
+		return "MOUNT";
+	case IO_UMOUNT2:
+		return "UMOUNT2";
+	case IO_CHMOD:
+		return "CHMOD";
+	case IO_FCHMOD:
+		return "FCHMOD";
+	case IO_CHOWN:
+		return "CHOWN";
+	case IO_FCHOWN:
+		return "FCHOWN";
+	case IO_TRUNCATE:
+		return "TRUNCATE";
+	case IO_FTRUNCATE:
+		return "FTRUNCATE";
+	case IO_LINK:
+		return "LINK";
+	case IO_LINKAT:
+		return "LINKAT";
+	case IO_SYMLINK:
+		return "SYMLINK";
+	case IO_SYMLINKAT:
+		return "SYMLINKAT";
+	case IO_READLINK:
+		return "READLINK";
+	case IO_READLINKAT:
+		return "READLINKAT";
 	default:
 		return "UNKNOWN";
 	}
