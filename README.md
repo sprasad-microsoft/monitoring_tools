@@ -52,6 +52,16 @@ src/
   - eBPF-based syscall tracepoint instrumentation (sys_enter/sys_exit)
   - Ring buffer export for event collection and analysis
 
+- **ioslower** — Trace slow filesystem I/O syscalls with configurable latency threshold.
+  - Measures latency of filesystem syscalls (same comprehensive syscall list as iosnoop)
+  - Configurable latency threshold (default: 10ms)
+  - Timestamps for entry/exit with microsecond precision
+  - Captures file paths, process info, and syscall return values
+  - Efficient filtering: only exports events exceeding latency threshold
+  - Useful for identifying performance bottlenecks in filesystem operations
+  - eBPF-based latency measurement via syscall tracepoints
+  - Ring buffer export for latency-based analysis
+
 ### SMB/CIFS Monitoring
 
 - **smbslower** — Trace slow SMB/CIFS operations with configurable latency threshold and command filtering.
@@ -131,3 +141,34 @@ TIME     PID    COMM             TYPE       RET PATH
 - **TYPE**: Syscall type (see Syscalls Traced list above)
 - **RET**: Syscall return value (bytes for read/write, fd for open, 0 for success on directory ops)
 - **PATH**: File path (for path-based syscalls) or syscall name (for fd-based syscalls like fstat, fchmod, etc.)
+
+### ioslower
+
+```bash
+sudo ./src/bin/ioslower                         # trace syscalls slower than 10ms (default)
+sudo ./src/bin/ioslower -m 50                   # trace syscalls slower than 50ms
+sudo ./src/bin/ioslower -m 5                    # trace syscalls slower than 5ms
+sudo ./src/bin/ioslower -d 30                   # trace for 30 seconds
+sudo ./src/bin/ioslower -m 100 -d 60            # 100ms threshold for 60 seconds
+sudo ./src/bin/ioslower -v                      # verbose with BPF debug info
+```
+
+#### Output Format
+
+```
+TIME     PID    COMM             SYSCALL      LATENCY(ms) STATUS PATH
+14:23:45 12345  bash             read           15.234      OK     read
+14:23:45 12345  bash             write          42.567      OK     write
+14:23:45 12345  bash             open           25.123      OK     /tmp/largefile.txt
+14:23:45 12346  systemd          mkdir          100.456     OK     /var/run/newdir
+14:23:45 12347  find             stat           18.789      OK     /tmp/file.txt
+```
+
+**Columns:**
+- **TIME**: Timestamp (HH:MM:SS)
+- **PID**: Process ID
+- **COMM**: Command name (truncated to 16 chars)
+- **SYSCALL**: Syscall name (open, read, write, mkdir, stat, etc.)
+- **LATENCY(ms)**: Syscall duration in milliseconds (only syscalls exceeding threshold are shown)
+- **STATUS**: OK for successful syscalls (ret >= 0), ERR for errors (ret < 0)
+- **PATH**: File path (for path-based syscalls) or syscall name (for fd-based syscalls)
