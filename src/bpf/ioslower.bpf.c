@@ -741,4 +741,311 @@ int trace_truncate_exit(struct trace_event_raw_sys_exit *ctx)
 	return 0;
 }
 
+SEC("tp/syscalls/sys_enter_fchmod")
+int trace_fchmod_enter(struct trace_event_raw_sys_enter *ctx)
+{
+	__u64 id = bpf_get_current_pid_uid();
+	struct start_t start = {};
+
+	start.ts = bpf_ktime_get_ns();
+	start.type = SC_FCHMOD;
+	bpf_probe_read_kernel_str(&start.fname, sizeof(start.fname), (void *)"fchmod");
+
+	bpf_map_update_elem(&syscall_start, &id, &start, 0);
+	return 0;
+}
+
+SEC("tp/syscalls/sys_exit_fchmod")
+int trace_fchmod_exit(struct trace_event_raw_sys_exit *ctx)
+{
+	__u64 id = bpf_get_current_pid_uid();
+	long ret = ctx->ret;
+	
+	struct start_t *start = bpf_map_lookup_elem(&syscall_start, &id);
+	if (start) {
+		__u64 delta = bpf_ktime_get_ns() - start->ts;
+		emit_event(SC_FCHMOD, delta, ret, start->fname);
+		bpf_map_delete_elem(&syscall_start, &id);
+	}
+	
+	return 0;
+}
+
+SEC("tp/syscalls/sys_enter_chown")
+int trace_chown_enter(struct trace_event_raw_sys_enter *ctx)
+{
+	__u64 id = bpf_get_current_pid_uid();
+	struct start_t start = {};
+
+	start.ts = bpf_ktime_get_ns();
+	start.type = SC_CHOWN;
+	char *fname = (char *)ctx->args[0];
+	bpf_probe_read_kernel_str(&start.fname, sizeof(start.fname), fname);
+
+	bpf_map_update_elem(&syscall_start, &id, &start, 0);
+	return 0;
+}
+
+SEC("tp/syscalls/sys_exit_chown")
+int trace_chown_exit(struct trace_event_raw_sys_exit *ctx)
+{
+	__u64 id = bpf_get_current_pid_uid();
+	long ret = ctx->ret;
+	
+	struct start_t *start = bpf_map_lookup_elem(&syscall_start, &id);
+	if (start) {
+		__u64 delta = bpf_ktime_get_ns() - start->ts;
+		emit_event(SC_CHOWN, delta, ret, start->fname);
+		bpf_map_delete_elem(&syscall_start, &id);
+	}
+	
+	return 0;
+}
+
+SEC("tp/syscalls/sys_enter_fchown")
+int trace_fchown_enter(struct trace_event_raw_sys_enter *ctx)
+{
+	__u64 id = bpf_get_current_pid_uid();
+	struct start_t start = {};
+
+	start.ts = bpf_ktime_get_ns();
+	start.type = SC_FCHOWN;
+	bpf_probe_read_kernel_str(&start.fname, sizeof(start.fname), (void *)"fchown");
+
+	bpf_map_update_elem(&syscall_start, &id, &start, 0);
+	return 0;
+}
+
+SEC("tp/syscalls/sys_exit_fchown")
+int trace_fchown_exit(struct trace_event_raw_sys_exit *ctx)
+{
+	__u64 id = bpf_get_current_pid_uid();
+	long ret = ctx->ret;
+	
+	struct start_t *start = bpf_map_lookup_elem(&syscall_start, &id);
+	if (start) {
+		__u64 delta = bpf_ktime_get_ns() - start->ts;
+		emit_event(SC_FCHOWN, delta, ret, start->fname);
+		bpf_map_delete_elem(&syscall_start, &id);
+	}
+	
+	return 0;
+}
+
+SEC("tp/syscalls/sys_enter_ftruncate")
+int trace_ftruncate_enter(struct trace_event_raw_sys_enter *ctx)
+{
+	__u64 id = bpf_get_current_pid_uid();
+	struct start_t start = {};
+
+	start.ts = bpf_ktime_get_ns();
+	start.type = SC_FTRUNCATE;
+	bpf_probe_read_kernel_str(&start.fname, sizeof(start.fname), (void *)"ftruncate");
+
+	bpf_map_update_elem(&syscall_start, &id, &start, 0);
+	return 0;
+}
+
+SEC("tp/syscalls/sys_exit_ftruncate")
+int trace_ftruncate_exit(struct trace_event_raw_sys_exit *ctx)
+{
+	__u64 id = bpf_get_current_pid_uid();
+	long ret = ctx->ret;
+	
+	struct start_t *start = bpf_map_lookup_elem(&syscall_start, &id);
+	if (start) {
+		__u64 delta = bpf_ktime_get_ns() - start->ts;
+		emit_event(SC_FTRUNCATE, delta, ret, start->fname);
+		bpf_map_delete_elem(&syscall_start, &id);
+	}
+	
+	return 0;
+}
+
+SEC("tp/syscalls/sys_enter_link")
+int trace_link_enter(struct trace_event_raw_sys_enter *ctx)
+{
+	__u64 id = bpf_get_current_pid_uid();
+	struct start_t start = {};
+
+	start.ts = bpf_ktime_get_ns();
+	start.type = SC_LINK;
+	char *fname = (char *)ctx->args[0];
+	bpf_probe_read_kernel_str(&start.fname, sizeof(start.fname), fname);
+
+	bpf_map_update_elem(&syscall_start, &id, &start, 0);
+	return 0;
+}
+
+SEC("tp/syscalls/sys_exit_link")
+int trace_link_exit(struct trace_event_raw_sys_exit *ctx)
+{
+	__u64 id = bpf_get_current_pid_uid();
+	long ret = ctx->ret;
+	
+	struct start_t *start = bpf_map_lookup_elem(&syscall_start, &id);
+	if (start) {
+		__u64 delta = bpf_ktime_get_ns() - start->ts;
+		emit_event(SC_LINK, delta, ret, start->fname);
+		bpf_map_delete_elem(&syscall_start, &id);
+	}
+	
+	return 0;
+}
+
+SEC("tp/syscalls/sys_enter_linkat")
+int trace_linkat_enter(struct trace_event_raw_sys_enter *ctx)
+{
+	__u64 id = bpf_get_current_pid_uid();
+	struct start_t start = {};
+
+	start.ts = bpf_ktime_get_ns();
+	start.type = SC_LINKAT;
+	char *fname = (char *)ctx->args[1];
+	bpf_probe_read_kernel_str(&start.fname, sizeof(start.fname), fname);
+
+	bpf_map_update_elem(&syscall_start, &id, &start, 0);
+	return 0;
+}
+
+SEC("tp/syscalls/sys_exit_linkat")
+int trace_linkat_exit(struct trace_event_raw_sys_exit *ctx)
+{
+	__u64 id = bpf_get_current_pid_uid();
+	long ret = ctx->ret;
+	
+	struct start_t *start = bpf_map_lookup_elem(&syscall_start, &id);
+	if (start) {
+		__u64 delta = bpf_ktime_get_ns() - start->ts;
+		emit_event(SC_LINKAT, delta, ret, start->fname);
+		bpf_map_delete_elem(&syscall_start, &id);
+	}
+	
+	return 0;
+}
+
+SEC("tp/syscalls/sys_enter_symlink")
+int trace_symlink_enter(struct trace_event_raw_sys_enter *ctx)
+{
+	__u64 id = bpf_get_current_pid_uid();
+	struct start_t start = {};
+
+	start.ts = bpf_ktime_get_ns();
+	start.type = SC_SYMLINK;
+	char *fname = (char *)ctx->args[0];
+	bpf_probe_read_kernel_str(&start.fname, sizeof(start.fname), fname);
+
+	bpf_map_update_elem(&syscall_start, &id, &start, 0);
+	return 0;
+}
+
+SEC("tp/syscalls/sys_exit_symlink")
+int trace_symlink_exit(struct trace_event_raw_sys_exit *ctx)
+{
+	__u64 id = bpf_get_current_pid_uid();
+	long ret = ctx->ret;
+	
+	struct start_t *start = bpf_map_lookup_elem(&syscall_start, &id);
+	if (start) {
+		__u64 delta = bpf_ktime_get_ns() - start->ts;
+		emit_event(SC_SYMLINK, delta, ret, start->fname);
+		bpf_map_delete_elem(&syscall_start, &id);
+	}
+	
+	return 0;
+}
+
+SEC("tp/syscalls/sys_enter_symlinkat")
+int trace_symlinkat_enter(struct trace_event_raw_sys_enter *ctx)
+{
+	__u64 id = bpf_get_current_pid_uid();
+	struct start_t start = {};
+
+	start.ts = bpf_ktime_get_ns();
+	start.type = SC_SYMLINKAT;
+	char *fname = (char *)ctx->args[0];
+	bpf_probe_read_kernel_str(&start.fname, sizeof(start.fname), fname);
+
+	bpf_map_update_elem(&syscall_start, &id, &start, 0);
+	return 0;
+}
+
+SEC("tp/syscalls/sys_exit_symlinkat")
+int trace_symlinkat_exit(struct trace_event_raw_sys_exit *ctx)
+{
+	__u64 id = bpf_get_current_pid_uid();
+	long ret = ctx->ret;
+	
+	struct start_t *start = bpf_map_lookup_elem(&syscall_start, &id);
+	if (start) {
+		__u64 delta = bpf_ktime_get_ns() - start->ts;
+		emit_event(SC_SYMLINKAT, delta, ret, start->fname);
+		bpf_map_delete_elem(&syscall_start, &id);
+	}
+	
+	return 0;
+}
+
+SEC("tp/syscalls/sys_enter_readlink")
+int trace_readlink_enter(struct trace_event_raw_sys_enter *ctx)
+{
+	__u64 id = bpf_get_current_pid_uid();
+	struct start_t start = {};
+
+	start.ts = bpf_ktime_get_ns();
+	start.type = SC_READLINK;
+	char *fname = (char *)ctx->args[0];
+	bpf_probe_read_kernel_str(&start.fname, sizeof(start.fname), fname);
+
+	bpf_map_update_elem(&syscall_start, &id, &start, 0);
+	return 0;
+}
+
+SEC("tp/syscalls/sys_exit_readlink")
+int trace_readlink_exit(struct trace_event_raw_sys_exit *ctx)
+{
+	__u64 id = bpf_get_current_pid_uid();
+	long ret = ctx->ret;
+	
+	struct start_t *start = bpf_map_lookup_elem(&syscall_start, &id);
+	if (start) {
+		__u64 delta = bpf_ktime_get_ns() - start->ts;
+		emit_event(SC_READLINK, delta, ret, start->fname);
+		bpf_map_delete_elem(&syscall_start, &id);
+	}
+	
+	return 0;
+}
+
+SEC("tp/syscalls/sys_enter_readlinkat")
+int trace_readlinkat_enter(struct trace_event_raw_sys_enter *ctx)
+{
+	__u64 id = bpf_get_current_pid_uid();
+	struct start_t start = {};
+
+	start.ts = bpf_ktime_get_ns();
+	start.type = SC_READLINKAT;
+	char *fname = (char *)ctx->args[1];
+	bpf_probe_read_kernel_str(&start.fname, sizeof(start.fname), fname);
+
+	bpf_map_update_elem(&syscall_start, &id, &start, 0);
+	return 0;
+}
+
+SEC("tp/syscalls/sys_exit_readlinkat")
+int trace_readlinkat_exit(struct trace_event_raw_sys_exit *ctx)
+{
+	__u64 id = bpf_get_current_pid_uid();
+	long ret = ctx->ret;
+	
+	struct start_t *start = bpf_map_lookup_elem(&syscall_start, &id);
+	if (start) {
+		__u64 delta = bpf_ktime_get_ns() - start->ts;
+		emit_event(SC_READLINKAT, delta, ret, start->fname);
+		bpf_map_delete_elem(&syscall_start, &id);
+	}
+	
+	return 0;
+}
+
 char LICENSE[] SEC("license") = "GPL";
