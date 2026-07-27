@@ -125,13 +125,13 @@ TIME     PID    COMM             TYPE       RET PATH
 14:23:45 12345  bash             OPEN         3 /tmp/testfile.txt
 14:23:45 12345  bash             READ       512 read
 14:23:45 12345  bash             WRITE      512 write
-14:23:45 12345  bash             MKDIR        0 /tmp/newdir
-14:23:45 12345  bash             UNLINK       0 /tmp/oldfile.txt
-14:23:45 12345  bash             MOUNT        0 /mnt/share
-14:23:45 12345  bash             CHMOD        0 chmod
-14:23:45 12345  bash             RENAME       0 /tmp/old.txt
-14:23:45 12345  bash             READLINK    12 /etc/passwd
-14:23:45 12345  bash             CLOSE        0 close
+14:23:45 12345  bash             MKDIR        0 mode=0755           /tmp/newdir
+14:23:45 12345  bash             UNLINK       0 -                   /tmp/oldfile.txt
+14:23:45 12345  bash             MOUNT        0 flags=0x0           /mnt/share
+14:23:45 12345  bash             CHMOD        0 mode=0644           /tmp/file.txt
+14:23:45 12345  bash             RENAME       0 rename              /tmp/old.txt
+14:23:45 12345  bash             READLINK    12 size=256            /etc/passwd
+14:23:45 12345  bash             CLOSE        0 fd=3                close
 ```
 
 **Columns:**
@@ -140,7 +140,29 @@ TIME     PID    COMM             TYPE       RET PATH
 - **COMM**: Command name (truncated to 16 chars)
 - **TYPE**: Syscall type (see Syscalls Traced list above)
 - **RET**: Syscall return value (bytes for read/write, fd for open, 0 for success on directory ops)
+- **ARGS**: Formatted syscall arguments (see [Syscall Arguments](#syscall-arguments) section below)
 - **PATH**: File path (for path-based syscalls) or syscall name (for fd-based syscalls like fstat, fchmod, etc.)
+
+##### Syscall Arguments
+
+iosnoop captures and displays human-readable syscall arguments alongside the path and return value:
+
+- **File Operations**: `flags=0xNNNN mode=0NNN` (for open/openat: permission bits and flags)
+- **I/O Operations**: `fd=NNN size=NNN` (for read/write: file descriptor and buffer size)
+- **Directory Operations**: `mode=0NNN` (for mkdir: directory permission bits)
+- **Deletion**: `dirfd=NNN flags=0xNNNN` (for unlinkat: descriptor and flags)
+- **Rename**: `olddirfd=NNN newdirfd=NNN [flags=0xNNNN]` (directory context and optionally flags for renameat2)
+- **Link Operations**: `dirfd=NNN flags=0xNNNN` (for linkat: directory context and flags)
+- **Mount Operations**: `flags=0xNNNN` (mount/umount flags)
+- **Ownership**: `uid=NNN gid=NNN` (for chown: user and group IDs)
+- **Permissions**: `fd=NNN mode=0NNN` (for fchmod: file descriptor and new mode)
+- **Truncation**: `length=NNN` (for truncate/ftruncate: target file size)
+
+Example arguments:
+- `open("/tmp/test.txt", flags=0x241 mode=0644)` → flags=0x241 mode=0644
+- `read(fd=3, size=4096)` → fd=3 size=4096
+- `mkdir("/tmp/newdir", mode=0755)` → mode=0755
+- `chown("/etc/config", uid=1000 gid=1000)` → uid=1000 gid=1000
 
 ### ioslower
 

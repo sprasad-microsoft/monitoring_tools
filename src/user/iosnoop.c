@@ -53,6 +53,7 @@ struct io_event {
 	__u32 __pad3;
 	char comm[16];
 	char fname[256];
+	char args[256];
 };
 
 static volatile sig_atomic_t exiting = 0;
@@ -199,12 +200,13 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 	tm = localtime(&t);
 	strftime(ts, sizeof(ts), "%H:%M:%S", tm);
 
-	printf("%-8s %-6d %-16s %-8s %6d %s\n",
+	printf("%-8s %-6d %-16s %-12s %6d %-30s %s\n",
 		ts,
 		e->pid,
 		e->comm,
 		io_type_str(e->type),
 		e->ret,
+		e->args[0] ? e->args : "-",
 		e->fname);
 
 	return 0;
@@ -275,8 +277,8 @@ int main(int argc, char **argv)
 		goto cleanup;
 	}
 
-	printf("%-8s %-6s %-16s %-8s %6s %s\n",
-		"TIME", "PID", "COMM", "TYPE", "RET", "PATH");
+	printf("%-8s %-6s %-16s %-12s %6s %-30s %s\n",
+		"TIME", "PID", "COMM", "TYPE", "RET", "ARGS", "PATH");
 
 	if (opts.duration) {
 		sleep(opts.duration);

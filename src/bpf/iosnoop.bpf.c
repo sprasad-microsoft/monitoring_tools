@@ -47,6 +47,7 @@ struct io_event {
 	__u32 __pad3;
 	char comm[16];
 	char fname[256];
+	char args[256];
 };
 
 /* Ring buffer for events */
@@ -63,13 +64,19 @@ struct {
 	__type(value, __u32);
 } mount_filter SEC(".maps");
 
-/* Per-task state for capturing syscall arguments */
+/* Store syscall enter context (path + args) */
+struct enter_state {
+	char fname[256];
+	__u64 args[6];
+	__u8 type;
+};
+
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__uint(max_entries, 4096);
 	__type(key, __u64);
-	__type(value, char[256]);
-} task_paths SEC(".maps");
+	__type(value, struct enter_state);
+} enter_ctx SEC(".maps");
 
 static __always_inline int should_filter(__u32 dev_id)
 {
@@ -79,7 +86,188 @@ static __always_inline int should_filter(__u32 dev_id)
 	return 1;
 }
 
-static __always_inline void emit_event(__u8 type, __u32 ret, const char *fname)
+/* Format syscall arguments as human-readable string */
+static __always_inline void format_args(__u8 type, struct enter_state *state, char *args_str)
+{
+	args_str[0] = '\0';
+	
+	if (!state)
+		return;
+
+	switch (type) {
+	/* open(path, flags, mode) */
+	case IO_OPEN: {
+		__u64 flags = state->args[1];
+		__u64 mode = state->args[2];
+		bpf_snprintf(args_str, 256, "flags=0x%llx mode=0%o", flags, mode);
+		break;
+	}
+	/* openat(dirfd, path, flags, mode) */
+	case IO_OPENAT: {
+		__u64 dirfd = state->args[0];
+		__u64 flags = state->args[2];
+		__u64 mode = state->args[3];
+		bpf_snprintf(args_str, 256, "dirfd=%lld flags=0x%llx mode=0%o", dirfd, flags, mode);
+		break;
+	}
+	/* read/write(fd, buf, size) */
+	case IO_READ:
+	case IO_WRITE: {
+		__u64 fd = state->args[0];
+		__u64 size = state->args[2];
+		bpf_snprintf(args_str, 256, "fd=%lld size=%llu", fd, size);
+		break;
+	}
+	/* close(fd) */
+	case IO_CLOSE: {
+		__u64 fd = state->args[0];
+		bpf_snprintf(args_str, 256, "fd=%lld", fd);
+		break;
+	}
+	/* chmod(path, mode) */
+	case IO_CHMOD: {
+		__u64 mode = state->args[1];
+		bpf_snprintf(args_str, 256, "mode=0%o", mode);
+		break;
+	}
+	/* stat/lstat(path) */
+	case IO_STAT:
+	case IO_LSTAT:
+		bpf_snprintf(args_str, 256, "stat");
+		break;
+	/* fstat(fd, ...) */
+	case IO_FSTAT: {
+		__u64 fd = state->args[0];
+		bpf_snprintf(args_str, 256, "fd=%lld", fd);
+		break;
+	}
+	/* mkdir(path, mode) */
+	case IO_MKDIR: {
+		__u64 mode = state->args[1];
+		bpf_snprintf(args_str, 256, "mode=0%o", mode);
+		break;
+	}
+	/* mkdirat(dirfd, path, mode) */
+	case IO_MKDIRAT: {
+		__u64 dirfd = state->args[0];
+		__u64 mode = state->args[2];
+		bpf_snprintf(args_str, 256, "dirfd=%lld mode=0%o", dirfd, mode);
+		break;
+	}
+	/* unlinkat(dirfd, path, flags) */
+	case IO_UNLINKAT: {
+		__u64 dirfd = state->args[0];
+		__u64 flags = state->args[2];
+		bpf_snprintf(args_str, 256, "dirfd=%lld flags=0x%llx", dirfd, flags);
+		break;
+	}
+	/* rename(oldpath, newpath) */
+	case IO_RENAME:
+		bpf_snprintf(args_str, 256, "rename");
+		break;
+	/* renameat(olddirfd, oldpath, newdirfd, newpath) */
+	case IO_RENAMEAT: {
+		__u64 olddirfd = state->args[0];
+		__u64 newdirfd = state->args[2];
+		bpf_snprintf(args_str, 256, "olddirfd=%lld newdirfd=%lld", olddirfd, newdirfd);
+		break;
+	}
+	/* renameat2(..., flags) */
+	case IO_RENAMEAT2: {
+		__u64 olddirfd = state->args[0];
+		__u64 newdirfd = state->args[2];
+		__u64 flags = state->args[4];
+		bpf_snprintf(args_str, 256, "olddirfd=%lld newdirfd=%lld flags=0x%llx", olddirfd, newdirfd, flags);
+		break;
+	}
+	/* mount(source, target, type, flags, data) */
+	case IO_MOUNT: {
+		__u64 flags = state->args[3];
+		bpf_snprintf(args_str, 256, "flags=0x%llx", flags);
+		break;
+	}
+	/* umount2(target, flags) */
+	case IO_UMOUNT2: {
+		__u64 flags = state->args[1];
+		bpf_snprintf(args_str, 256, "flags=0x%llx", flags);
+		break;
+	}
+	/* chown(path, uid, gid) */
+	case IO_CHOWN: {
+		__u64 uid = state->args[1];
+		__u64 gid = state->args[2];
+		bpf_snprintf(args_str, 256, "uid=%llu gid=%llu", uid, gid);
+		break;
+	}
+	/* fchown(fd, uid, gid) */
+	case IO_FCHOWN: {
+		__u64 fd = state->args[0];
+		__u64 uid = state->args[1];
+		__u64 gid = state->args[2];
+		bpf_snprintf(args_str, 256, "fd=%lld uid=%llu gid=%llu", fd, uid, gid);
+		break;
+	}
+	/* truncate(path, length) */
+	case IO_TRUNCATE: {
+		__u64 length = state->args[1];
+		bpf_snprintf(args_str, 256, "length=%llu", length);
+		break;
+	}
+	/* ftruncate(fd, length) */
+	case IO_FTRUNCATE: {
+		__u64 fd = state->args[0];
+		__u64 length = state->args[1];
+		bpf_snprintf(args_str, 256, "fd=%lld length=%llu", fd, length);
+		break;
+	}
+	/* link(oldpath, newpath) */
+	case IO_LINK:
+		bpf_snprintf(args_str, 256, "link");
+		break;
+	/* linkat(olddirfd, oldpath, newdirfd, newpath, flags) */
+	case IO_LINKAT: {
+		__u64 olddirfd = state->args[0];
+		__u64 newdirfd = state->args[2];
+		__u64 flags = state->args[4];
+		bpf_snprintf(args_str, 256, "olddirfd=%lld newdirfd=%lld flags=0x%llx", olddirfd, newdirfd, flags);
+		break;
+	}
+	/* symlink(target, linkpath) */
+	case IO_SYMLINK:
+		bpf_snprintf(args_str, 256, "symlink");
+		break;
+	/* symlinkat(target, newdirfd, linkpath) */
+	case IO_SYMLINKAT: {
+		__u64 newdirfd = state->args[1];
+		bpf_snprintf(args_str, 256, "newdirfd=%lld", newdirfd);
+		break;
+	}
+	/* readlink(path, buf, size) */
+	case IO_READLINK: {
+		__u64 size = state->args[2];
+		bpf_snprintf(args_str, 256, "size=%llu", size);
+		break;
+	}
+	/* readlinkat(dirfd, path, buf, size) */
+	case IO_READLINKAT: {
+		__u64 dirfd = state->args[0];
+		__u64 size = state->args[3];
+		bpf_snprintf(args_str, 256, "dirfd=%lld size=%llu", dirfd, size);
+		break;
+	}
+	/* fchmod(fd, mode) */
+	case IO_FCHMOD: {
+		__u64 fd = state->args[0];
+		__u64 mode = state->args[1];
+		bpf_snprintf(args_str, 256, "fd=%lld mode=0%o", fd, mode);
+		break;
+	}
+	default:
+		bpf_snprintf(args_str, 256, "");
+	}
+}
+
+static __always_inline void emit_event(__u8 type, __u32 ret, const char *fname, const char *args_str)
 {
 	struct io_event *e;
 
@@ -101,6 +289,11 @@ static __always_inline void emit_event(__u8 type, __u32 ret, const char *fname)
 	else
 		e->fname[0] = '\0';
 
+	if (args_str)
+		__builtin_memcpy(&e->args, args_str, sizeof(e->args));
+	else
+		e->args[0] = '\0';
+
 	bpf_ringbuf_submit(e, 0);
 }
 
@@ -109,11 +302,16 @@ SEC("tp/syscalls/sys_enter_open")
 int trace_open_enter(struct trace_event_raw_sys_enter *ctx)
 {
 	__u64 id = bpf_get_current_pid_uid();
-	__u32 pid = id >> 32;
-	
+	struct enter_state state = {};
+
+	state.type = IO_OPEN;
+	state.args[0] = ctx->args[0];
+	state.args[1] = ctx->args[1];
+	state.args[2] = ctx->args[2];
 	char *fname = (char *)ctx->args[0];
-	bpf_map_update_elem(&task_paths, &id, fname, 0);
-	
+	bpf_probe_read_kernel_str(&state.fname, sizeof(state.fname), fname);
+
+	bpf_map_update_elem(&enter_ctx, &id, &state, 0);
 	return 0;
 }
 
@@ -123,10 +321,12 @@ int trace_open_exit(struct trace_event_raw_sys_exit *ctx)
 	__u64 id = bpf_get_current_pid_uid();
 	long ret = ctx->ret;
 	
-	char **fname = bpf_map_lookup_elem(&task_paths, &id);
-	if (fname) {
-		emit_event(IO_OPEN, ret, *fname);
-		bpf_map_delete_elem(&task_paths, &id);
+	struct enter_state *state = bpf_map_lookup_elem(&enter_ctx, &id);
+	if (state) {
+		char args_str[256];
+		format_args(IO_OPEN, state, args_str);
+		emit_event(IO_OPEN, ret, state->fname, args_str);
+		bpf_map_delete_elem(&enter_ctx, &id);
 	}
 	
 	return 0;
@@ -136,11 +336,17 @@ SEC("tp/syscalls/sys_enter_openat")
 int trace_openat_enter(struct trace_event_raw_sys_enter *ctx)
 {
 	__u64 id = bpf_get_current_pid_uid();
-	
-	/* args[1] is the pathname for openat */
+	struct enter_state state = {};
+
+	state.type = IO_OPENAT;
+	state.args[0] = ctx->args[0];
+	state.args[1] = ctx->args[1];
+	state.args[2] = ctx->args[2];
+	state.args[3] = ctx->args[3];
 	char *fname = (char *)ctx->args[1];
-	bpf_map_update_elem(&task_paths, &id, fname, 0);
-	
+	bpf_probe_read_kernel_str(&state.fname, sizeof(state.fname), fname);
+
+	bpf_map_update_elem(&enter_ctx, &id, &state, 0);
 	return 0;
 }
 
@@ -150,88 +356,123 @@ int trace_openat_exit(struct trace_event_raw_sys_exit *ctx)
 	__u64 id = bpf_get_current_pid_uid();
 	long ret = ctx->ret;
 	
-	char **fname = bpf_map_lookup_elem(&task_paths, &id);
-	if (fname) {
-		emit_event(IO_OPEN, ret, *fname);
-		bpf_map_delete_elem(&task_paths, &id);
+	struct enter_state *state = bpf_map_lookup_elem(&enter_ctx, &id);
+	if (state) {
+		char args_str[256];
+		format_args(IO_OPENAT, state, args_str);
+		emit_event(IO_OPENAT, ret, state->fname, args_str);
+		bpf_map_delete_elem(&enter_ctx, &id);
 	}
 	
 	return 0;
 }
 
-/* Trace syscall: read */
 SEC("tp/syscalls/sys_enter_read")
 int trace_read_enter(struct trace_event_raw_sys_enter *ctx)
 {
 	__u64 id = bpf_get_current_pid_uid();
-	__u32 pid = id >> 32;
-	__u32 fd = ctx->args[0];
-	
+	struct enter_state state = {};
+
+	state.type = IO_READ;
+	state.args[0] = ctx->args[0];
+	state.args[2] = ctx->args[2];
+	bpf_probe_read_kernel_str(&state.fname, sizeof(state.fname), (void *)"read");
+
+	bpf_map_update_elem(&enter_ctx, &id, &state, 0);
 	return 0;
 }
 
 SEC("tp/syscalls/sys_exit_read")
 int trace_read_exit(struct trace_event_raw_sys_exit *ctx)
 {
+	__u64 id = bpf_get_current_pid_uid();
 	long ret = ctx->ret;
-	if (ret > 0) {
-		/* Only emit on successful read with data */
-		char fname[] = "read";
-		emit_event(IO_READ, ret, fname);
+	
+	struct enter_state *state = bpf_map_lookup_elem(&enter_ctx, &id);
+	if (state) {
+		char args_str[256];
+		format_args(IO_READ, state, args_str);
+		emit_event(IO_READ, ret, state->fname, args_str);
+		bpf_map_delete_elem(&enter_ctx, &id);
 	}
+	
 	return 0;
 }
 
-/* Trace syscall: write */
 SEC("tp/syscalls/sys_enter_write")
 int trace_write_enter(struct trace_event_raw_sys_enter *ctx)
 {
 	__u64 id = bpf_get_current_pid_uid();
-	__u32 fd = ctx->args[0];
-	__u32 count = ctx->args[2];
-	
+	struct enter_state state = {};
+
+	state.type = IO_WRITE;
+	state.args[0] = ctx->args[0];
+	state.args[2] = ctx->args[2];
+	bpf_probe_read_kernel_str(&state.fname, sizeof(state.fname), (void *)"write");
+
+	bpf_map_update_elem(&enter_ctx, &id, &state, 0);
 	return 0;
 }
 
 SEC("tp/syscalls/sys_exit_write")
 int trace_write_exit(struct trace_event_raw_sys_exit *ctx)
 {
+	__u64 id = bpf_get_current_pid_uid();
 	long ret = ctx->ret;
-	if (ret > 0) {
-		char fname[] = "write";
-		emit_event(IO_WRITE, ret, fname);
+	
+	struct enter_state *state = bpf_map_lookup_elem(&enter_ctx, &id);
+	if (state) {
+		char args_str[256];
+		format_args(IO_WRITE, state, args_str);
+		emit_event(IO_WRITE, ret, state->fname, args_str);
+		bpf_map_delete_elem(&enter_ctx, &id);
 	}
+	
 	return 0;
 }
 
-/* Trace syscall: close */
 SEC("tp/syscalls/sys_enter_close")
 int trace_close_enter(struct trace_event_raw_sys_enter *ctx)
 {
 	__u64 id = bpf_get_current_pid_uid();
-	__u32 fd = ctx->args[0];
-	
+	struct enter_state state = {};
+
+	state.type = IO_CLOSE;
+	state.args[0] = ctx->args[0];
+	bpf_probe_read_kernel_str(&state.fname, sizeof(state.fname), (void *)"close");
+
+	bpf_map_update_elem(&enter_ctx, &id, &state, 0);
 	return 0;
 }
 
 SEC("tp/syscalls/sys_exit_close")
 int trace_close_exit(struct trace_event_raw_sys_exit *ctx)
 {
+	__u64 id = bpf_get_current_pid_uid();
 	long ret = ctx->ret;
-	char fname[] = "close";
-	emit_event(IO_CLOSE, ret, fname);
+	
+	struct enter_state *state = bpf_map_lookup_elem(&enter_ctx, &id);
+	if (state) {
+		char args_str[256];
+		format_args(IO_CLOSE, state, args_str);
+		emit_event(IO_CLOSE, ret, state->fname, args_str);
+		bpf_map_delete_elem(&enter_ctx, &id);
+	}
 	
 	return 0;
 }
 
-/* Trace syscall: stat/lstat */
 SEC("tp/syscalls/sys_enter_stat")
 int trace_stat_enter(struct trace_event_raw_sys_enter *ctx)
 {
 	__u64 id = bpf_get_current_pid_uid();
+	struct enter_state state = {};
+
+	state.type = IO_STAT;
 	char *fname = (char *)ctx->args[0];
-	bpf_map_update_elem(&task_paths, &id, fname, 0);
-	
+	bpf_probe_read_kernel_str(&state.fname, sizeof(state.fname), fname);
+
+	bpf_map_update_elem(&enter_ctx, &id, &state, 0);
 	return 0;
 }
 
@@ -241,10 +482,12 @@ int trace_stat_exit(struct trace_event_raw_sys_exit *ctx)
 	__u64 id = bpf_get_current_pid_uid();
 	long ret = ctx->ret;
 	
-	char **fname = bpf_map_lookup_elem(&task_paths, &id);
-	if (fname) {
-		emit_event(IO_STAT, ret, *fname);
-		bpf_map_delete_elem(&task_paths, &id);
+	struct enter_state *state = bpf_map_lookup_elem(&enter_ctx, &id);
+	if (state) {
+		char args_str[256];
+		format_args(IO_STAT, state, args_str);
+		emit_event(IO_STAT, ret, state->fname, args_str);
+		bpf_map_delete_elem(&enter_ctx, &id);
 	}
 	
 	return 0;
@@ -254,9 +497,13 @@ SEC("tp/syscalls/sys_enter_lstat")
 int trace_lstat_enter(struct trace_event_raw_sys_enter *ctx)
 {
 	__u64 id = bpf_get_current_pid_uid();
+	struct enter_state state = {};
+
+	state.type = IO_LSTAT;
 	char *fname = (char *)ctx->args[0];
-	bpf_map_update_elem(&task_paths, &id, fname, 0);
-	
+	bpf_probe_read_kernel_str(&state.fname, sizeof(state.fname), fname);
+
+	bpf_map_update_elem(&enter_ctx, &id, &state, 0);
 	return 0;
 }
 
@@ -266,24 +513,28 @@ int trace_lstat_exit(struct trace_event_raw_sys_exit *ctx)
 	__u64 id = bpf_get_current_pid_uid();
 	long ret = ctx->ret;
 	
-	char **fname = bpf_map_lookup_elem(&task_paths, &id);
-	if (fname) {
-		emit_event(IO_LSTAT, ret, *fname);
-		bpf_map_delete_elem(&task_paths, &id);
+	struct enter_state *state = bpf_map_lookup_elem(&enter_ctx, &id);
+	if (state) {
+		char args_str[256];
+		format_args(IO_LSTAT, state, args_str);
+		emit_event(IO_LSTAT, ret, state->fname, args_str);
+		bpf_map_delete_elem(&enter_ctx, &id);
 	}
 	
 	return 0;
 }
 
-/* Trace syscall: fstat */
 SEC("tp/syscalls/sys_enter_fstat")
 int trace_fstat_enter(struct trace_event_raw_sys_enter *ctx)
 {
-	/* fstat doesn't have filename, just fd */
-	char fname[] = "fstat";
 	__u64 id = bpf_get_current_pid_uid();
-	bpf_map_update_elem(&task_paths, &id, fname, 0);
-	
+	struct enter_state state = {};
+
+	state.type = IO_FSTAT;
+	state.args[0] = ctx->args[0];
+	bpf_probe_read_kernel_str(&state.fname, sizeof(state.fname), (void *)"fstat");
+
+	bpf_map_update_elem(&enter_ctx, &id, &state, 0);
 	return 0;
 }
 
@@ -292,21 +543,30 @@ int trace_fstat_exit(struct trace_event_raw_sys_exit *ctx)
 {
 	__u64 id = bpf_get_current_pid_uid();
 	long ret = ctx->ret;
-	char fname[] = "fstat";
-	emit_event(IO_FSTAT, ret, fname);
-	bpf_map_delete_elem(&task_paths, &id);
+	
+	struct enter_state *state = bpf_map_lookup_elem(&enter_ctx, &id);
+	if (state) {
+		char args_str[256];
+		format_args(IO_FSTAT, state, args_str);
+		emit_event(IO_FSTAT, ret, state->fname, args_str);
+		bpf_map_delete_elem(&enter_ctx, &id);
+	}
 	
 	return 0;
 }
 
-/* Trace syscall: mkdir/mkdirat */
 SEC("tp/syscalls/sys_enter_mkdir")
 int trace_mkdir_enter(struct trace_event_raw_sys_enter *ctx)
 {
 	__u64 id = bpf_get_current_pid_uid();
+	struct enter_state state = {};
+
+	state.type = IO_MKDIR;
+	state.args[1] = ctx->args[1];
 	char *fname = (char *)ctx->args[0];
-	bpf_map_update_elem(&task_paths, &id, fname, 0);
-	
+	bpf_probe_read_kernel_str(&state.fname, sizeof(state.fname), fname);
+
+	bpf_map_update_elem(&enter_ctx, &id, &state, 0);
 	return 0;
 }
 
@@ -316,10 +576,12 @@ int trace_mkdir_exit(struct trace_event_raw_sys_exit *ctx)
 	__u64 id = bpf_get_current_pid_uid();
 	long ret = ctx->ret;
 	
-	char **fname = bpf_map_lookup_elem(&task_paths, &id);
-	if (fname) {
-		emit_event(IO_MKDIR, ret, *fname);
-		bpf_map_delete_elem(&task_paths, &id);
+	struct enter_state *state = bpf_map_lookup_elem(&enter_ctx, &id);
+	if (state) {
+		char args_str[256];
+		format_args(IO_MKDIR, state, args_str);
+		emit_event(IO_MKDIR, ret, state->fname, args_str);
+		bpf_map_delete_elem(&enter_ctx, &id);
 	}
 	
 	return 0;
@@ -329,9 +591,15 @@ SEC("tp/syscalls/sys_enter_mkdirat")
 int trace_mkdirat_enter(struct trace_event_raw_sys_enter *ctx)
 {
 	__u64 id = bpf_get_current_pid_uid();
+	struct enter_state state = {};
+
+	state.type = IO_MKDIRAT;
+	state.args[0] = ctx->args[0];
+	state.args[2] = ctx->args[2];
 	char *fname = (char *)ctx->args[1];
-	bpf_map_update_elem(&task_paths, &id, fname, 0);
-	
+	bpf_probe_read_kernel_str(&state.fname, sizeof(state.fname), fname);
+
+	bpf_map_update_elem(&enter_ctx, &id, &state, 0);
 	return 0;
 }
 
@@ -341,23 +609,28 @@ int trace_mkdirat_exit(struct trace_event_raw_sys_exit *ctx)
 	__u64 id = bpf_get_current_pid_uid();
 	long ret = ctx->ret;
 	
-	char **fname = bpf_map_lookup_elem(&task_paths, &id);
-	if (fname) {
-		emit_event(IO_MKDIRAT, ret, *fname);
-		bpf_map_delete_elem(&task_paths, &id);
+	struct enter_state *state = bpf_map_lookup_elem(&enter_ctx, &id);
+	if (state) {
+		char args_str[256];
+		format_args(IO_MKDIRAT, state, args_str);
+		emit_event(IO_MKDIRAT, ret, state->fname, args_str);
+		bpf_map_delete_elem(&enter_ctx, &id);
 	}
 	
 	return 0;
 }
 
-/* Trace syscall: rmdir */
 SEC("tp/syscalls/sys_enter_rmdir")
 int trace_rmdir_enter(struct trace_event_raw_sys_enter *ctx)
 {
 	__u64 id = bpf_get_current_pid_uid();
+	struct enter_state state = {};
+
+	state.type = IO_RMDIR;
 	char *fname = (char *)ctx->args[0];
-	bpf_map_update_elem(&task_paths, &id, fname, 0);
-	
+	bpf_probe_read_kernel_str(&state.fname, sizeof(state.fname), fname);
+
+	bpf_map_update_elem(&enter_ctx, &id, &state, 0);
 	return 0;
 }
 
@@ -367,23 +640,28 @@ int trace_rmdir_exit(struct trace_event_raw_sys_exit *ctx)
 	__u64 id = bpf_get_current_pid_uid();
 	long ret = ctx->ret;
 	
-	char **fname = bpf_map_lookup_elem(&task_paths, &id);
-	if (fname) {
-		emit_event(IO_RMDIR, ret, *fname);
-		bpf_map_delete_elem(&task_paths, &id);
+	struct enter_state *state = bpf_map_lookup_elem(&enter_ctx, &id);
+	if (state) {
+		char args_str[256];
+		format_args(IO_RMDIR, state, args_str);
+		emit_event(IO_RMDIR, ret, state->fname, args_str);
+		bpf_map_delete_elem(&enter_ctx, &id);
 	}
 	
 	return 0;
 }
 
-/* Trace syscall: unlink/unlinkat */
 SEC("tp/syscalls/sys_enter_unlink")
 int trace_unlink_enter(struct trace_event_raw_sys_enter *ctx)
 {
 	__u64 id = bpf_get_current_pid_uid();
+	struct enter_state state = {};
+
+	state.type = IO_UNLINK;
 	char *fname = (char *)ctx->args[0];
-	bpf_map_update_elem(&task_paths, &id, fname, 0);
-	
+	bpf_probe_read_kernel_str(&state.fname, sizeof(state.fname), fname);
+
+	bpf_map_update_elem(&enter_ctx, &id, &state, 0);
 	return 0;
 }
 
@@ -393,10 +671,12 @@ int trace_unlink_exit(struct trace_event_raw_sys_exit *ctx)
 	__u64 id = bpf_get_current_pid_uid();
 	long ret = ctx->ret;
 	
-	char **fname = bpf_map_lookup_elem(&task_paths, &id);
-	if (fname) {
-		emit_event(IO_UNLINK, ret, *fname);
-		bpf_map_delete_elem(&task_paths, &id);
+	struct enter_state *state = bpf_map_lookup_elem(&enter_ctx, &id);
+	if (state) {
+		char args_str[256];
+		format_args(IO_UNLINK, state, args_str);
+		emit_event(IO_UNLINK, ret, state->fname, args_str);
+		bpf_map_delete_elem(&enter_ctx, &id);
 	}
 	
 	return 0;
@@ -406,9 +686,15 @@ SEC("tp/syscalls/sys_enter_unlinkat")
 int trace_unlinkat_enter(struct trace_event_raw_sys_enter *ctx)
 {
 	__u64 id = bpf_get_current_pid_uid();
+	struct enter_state state = {};
+
+	state.type = IO_UNLINKAT;
+	state.args[0] = ctx->args[0];
+	state.args[2] = ctx->args[2];
 	char *fname = (char *)ctx->args[1];
-	bpf_map_update_elem(&task_paths, &id, fname, 0);
-	
+	bpf_probe_read_kernel_str(&state.fname, sizeof(state.fname), fname);
+
+	bpf_map_update_elem(&enter_ctx, &id, &state, 0);
 	return 0;
 }
 
@@ -418,23 +704,28 @@ int trace_unlinkat_exit(struct trace_event_raw_sys_exit *ctx)
 	__u64 id = bpf_get_current_pid_uid();
 	long ret = ctx->ret;
 	
-	char **fname = bpf_map_lookup_elem(&task_paths, &id);
-	if (fname) {
-		emit_event(IO_UNLINKAT, ret, *fname);
-		bpf_map_delete_elem(&task_paths, &id);
+	struct enter_state *state = bpf_map_lookup_elem(&enter_ctx, &id);
+	if (state) {
+		char args_str[256];
+		format_args(IO_UNLINKAT, state, args_str);
+		emit_event(IO_UNLINKAT, ret, state->fname, args_str);
+		bpf_map_delete_elem(&enter_ctx, &id);
 	}
 	
 	return 0;
 }
 
-/* Trace syscall: rename/renameat/renameat2 */
 SEC("tp/syscalls/sys_enter_rename")
 int trace_rename_enter(struct trace_event_raw_sys_enter *ctx)
 {
 	__u64 id = bpf_get_current_pid_uid();
+	struct enter_state state = {};
+
+	state.type = IO_RENAME;
 	char *fname = (char *)ctx->args[0];
-	bpf_map_update_elem(&task_paths, &id, fname, 0);
-	
+	bpf_probe_read_kernel_str(&state.fname, sizeof(state.fname), fname);
+
+	bpf_map_update_elem(&enter_ctx, &id, &state, 0);
 	return 0;
 }
 
@@ -444,10 +735,12 @@ int trace_rename_exit(struct trace_event_raw_sys_exit *ctx)
 	__u64 id = bpf_get_current_pid_uid();
 	long ret = ctx->ret;
 	
-	char **fname = bpf_map_lookup_elem(&task_paths, &id);
-	if (fname) {
-		emit_event(IO_RENAME, ret, *fname);
-		bpf_map_delete_elem(&task_paths, &id);
+	struct enter_state *state = bpf_map_lookup_elem(&enter_ctx, &id);
+	if (state) {
+		char args_str[256];
+		format_args(IO_RENAME, state, args_str);
+		emit_event(IO_RENAME, ret, state->fname, args_str);
+		bpf_map_delete_elem(&enter_ctx, &id);
 	}
 	
 	return 0;
@@ -457,9 +750,15 @@ SEC("tp/syscalls/sys_enter_renameat")
 int trace_renameat_enter(struct trace_event_raw_sys_enter *ctx)
 {
 	__u64 id = bpf_get_current_pid_uid();
+	struct enter_state state = {};
+
+	state.type = IO_RENAMEAT;
+	state.args[0] = ctx->args[0];
+	state.args[2] = ctx->args[2];
 	char *fname = (char *)ctx->args[1];
-	bpf_map_update_elem(&task_paths, &id, fname, 0);
-	
+	bpf_probe_read_kernel_str(&state.fname, sizeof(state.fname), fname);
+
+	bpf_map_update_elem(&enter_ctx, &id, &state, 0);
 	return 0;
 }
 
@@ -469,10 +768,12 @@ int trace_renameat_exit(struct trace_event_raw_sys_exit *ctx)
 	__u64 id = bpf_get_current_pid_uid();
 	long ret = ctx->ret;
 	
-	char **fname = bpf_map_lookup_elem(&task_paths, &id);
-	if (fname) {
-		emit_event(IO_RENAMEAT, ret, *fname);
-		bpf_map_delete_elem(&task_paths, &id);
+	struct enter_state *state = bpf_map_lookup_elem(&enter_ctx, &id);
+	if (state) {
+		char args_str[256];
+		format_args(IO_RENAMEAT, state, args_str);
+		emit_event(IO_RENAMEAT, ret, state->fname, args_str);
+		bpf_map_delete_elem(&enter_ctx, &id);
 	}
 	
 	return 0;
@@ -482,9 +783,16 @@ SEC("tp/syscalls/sys_enter_renameat2")
 int trace_renameat2_enter(struct trace_event_raw_sys_enter *ctx)
 {
 	__u64 id = bpf_get_current_pid_uid();
+	struct enter_state state = {};
+
+	state.type = IO_RENAMEAT2;
+	state.args[0] = ctx->args[0];
+	state.args[2] = ctx->args[2];
+	state.args[4] = ctx->args[4];
 	char *fname = (char *)ctx->args[1];
-	bpf_map_update_elem(&task_paths, &id, fname, 0);
-	
+	bpf_probe_read_kernel_str(&state.fname, sizeof(state.fname), fname);
+
+	bpf_map_update_elem(&enter_ctx, &id, &state, 0);
 	return 0;
 }
 
@@ -494,23 +802,29 @@ int trace_renameat2_exit(struct trace_event_raw_sys_exit *ctx)
 	__u64 id = bpf_get_current_pid_uid();
 	long ret = ctx->ret;
 	
-	char **fname = bpf_map_lookup_elem(&task_paths, &id);
-	if (fname) {
-		emit_event(IO_RENAMEAT2, ret, *fname);
-		bpf_map_delete_elem(&task_paths, &id);
+	struct enter_state *state = bpf_map_lookup_elem(&enter_ctx, &id);
+	if (state) {
+		char args_str[256];
+		format_args(IO_RENAMEAT2, state, args_str);
+		emit_event(IO_RENAMEAT2, ret, state->fname, args_str);
+		bpf_map_delete_elem(&enter_ctx, &id);
 	}
 	
 	return 0;
 }
 
-/* Trace syscall: mount/umount2 */
 SEC("tp/syscalls/sys_enter_mount")
 int trace_mount_enter(struct trace_event_raw_sys_enter *ctx)
 {
 	__u64 id = bpf_get_current_pid_uid();
-	char *fname = (char *)ctx->args[0];
-	bpf_map_update_elem(&task_paths, &id, fname, 0);
-	
+	struct enter_state state = {};
+
+	state.type = IO_MOUNT;
+	state.args[3] = ctx->args[3];
+	char *fname = (char *)ctx->args[1];
+	bpf_probe_read_kernel_str(&state.fname, sizeof(state.fname), fname);
+
+	bpf_map_update_elem(&enter_ctx, &id, &state, 0);
 	return 0;
 }
 
@@ -520,10 +834,12 @@ int trace_mount_exit(struct trace_event_raw_sys_exit *ctx)
 	__u64 id = bpf_get_current_pid_uid();
 	long ret = ctx->ret;
 	
-	char **fname = bpf_map_lookup_elem(&task_paths, &id);
-	if (fname) {
-		emit_event(IO_MOUNT, ret, *fname);
-		bpf_map_delete_elem(&task_paths, &id);
+	struct enter_state *state = bpf_map_lookup_elem(&enter_ctx, &id);
+	if (state) {
+		char args_str[256];
+		format_args(IO_MOUNT, state, args_str);
+		emit_event(IO_MOUNT, ret, state->fname, args_str);
+		bpf_map_delete_elem(&enter_ctx, &id);
 	}
 	
 	return 0;
@@ -533,9 +849,14 @@ SEC("tp/syscalls/sys_enter_umount2")
 int trace_umount2_enter(struct trace_event_raw_sys_enter *ctx)
 {
 	__u64 id = bpf_get_current_pid_uid();
+	struct enter_state state = {};
+
+	state.type = IO_UMOUNT2;
+	state.args[1] = ctx->args[1];
 	char *fname = (char *)ctx->args[0];
-	bpf_map_update_elem(&task_paths, &id, fname, 0);
-	
+	bpf_probe_read_kernel_str(&state.fname, sizeof(state.fname), fname);
+
+	bpf_map_update_elem(&enter_ctx, &id, &state, 0);
 	return 0;
 }
 
@@ -545,23 +866,29 @@ int trace_umount2_exit(struct trace_event_raw_sys_exit *ctx)
 	__u64 id = bpf_get_current_pid_uid();
 	long ret = ctx->ret;
 	
-	char **fname = bpf_map_lookup_elem(&task_paths, &id);
-	if (fname) {
-		emit_event(IO_UMOUNT2, ret, *fname);
-		bpf_map_delete_elem(&task_paths, &id);
+	struct enter_state *state = bpf_map_lookup_elem(&enter_ctx, &id);
+	if (state) {
+		char args_str[256];
+		format_args(IO_UMOUNT2, state, args_str);
+		emit_event(IO_UMOUNT2, ret, state->fname, args_str);
+		bpf_map_delete_elem(&enter_ctx, &id);
 	}
 	
 	return 0;
 }
 
-/* Trace syscall: chmod/fchmod */
 SEC("tp/syscalls/sys_enter_chmod")
 int trace_chmod_enter(struct trace_event_raw_sys_enter *ctx)
 {
 	__u64 id = bpf_get_current_pid_uid();
+	struct enter_state state = {};
+
+	state.type = IO_CHMOD;
+	state.args[1] = ctx->args[1];
 	char *fname = (char *)ctx->args[0];
-	bpf_map_update_elem(&task_paths, &id, fname, 0);
-	
+	bpf_probe_read_kernel_str(&state.fname, sizeof(state.fname), fname);
+
+	bpf_map_update_elem(&enter_ctx, &id, &state, 0);
 	return 0;
 }
 
@@ -571,10 +898,12 @@ int trace_chmod_exit(struct trace_event_raw_sys_exit *ctx)
 	__u64 id = bpf_get_current_pid_uid();
 	long ret = ctx->ret;
 	
-	char **fname = bpf_map_lookup_elem(&task_paths, &id);
-	if (fname) {
-		emit_event(IO_CHMOD, ret, *fname);
-		bpf_map_delete_elem(&task_paths, &id);
+	struct enter_state *state = bpf_map_lookup_elem(&enter_ctx, &id);
+	if (state) {
+		char args_str[256];
+		format_args(IO_CHMOD, state, args_str);
+		emit_event(IO_CHMOD, ret, state->fname, args_str);
+		bpf_map_delete_elem(&enter_ctx, &id);
 	}
 	
 	return 0;
@@ -583,10 +912,15 @@ int trace_chmod_exit(struct trace_event_raw_sys_exit *ctx)
 SEC("tp/syscalls/sys_enter_fchmod")
 int trace_fchmod_enter(struct trace_event_raw_sys_enter *ctx)
 {
-	char fname[] = "fchmod";
 	__u64 id = bpf_get_current_pid_uid();
-	bpf_map_update_elem(&task_paths, &id, fname, 0);
-	
+	struct enter_state state = {};
+
+	state.type = IO_FCHMOD;
+	state.args[0] = ctx->args[0];
+	state.args[1] = ctx->args[1];
+	bpf_probe_read_kernel_str(&state.fname, sizeof(state.fname), (void *)"fchmod");
+
+	bpf_map_update_elem(&enter_ctx, &id, &state, 0);
 	return 0;
 }
 
@@ -595,21 +929,31 @@ int trace_fchmod_exit(struct trace_event_raw_sys_exit *ctx)
 {
 	__u64 id = bpf_get_current_pid_uid();
 	long ret = ctx->ret;
-	char fname[] = "fchmod";
-	emit_event(IO_FCHMOD, ret, fname);
-	bpf_map_delete_elem(&task_paths, &id);
+	
+	struct enter_state *state = bpf_map_lookup_elem(&enter_ctx, &id);
+	if (state) {
+		char args_str[256];
+		format_args(IO_FCHMOD, state, args_str);
+		emit_event(IO_FCHMOD, ret, state->fname, args_str);
+		bpf_map_delete_elem(&enter_ctx, &id);
+	}
 	
 	return 0;
 }
 
-/* Trace syscall: chown/fchown */
 SEC("tp/syscalls/sys_enter_chown")
 int trace_chown_enter(struct trace_event_raw_sys_enter *ctx)
 {
 	__u64 id = bpf_get_current_pid_uid();
+	struct enter_state state = {};
+
+	state.type = IO_CHOWN;
+	state.args[1] = ctx->args[1];
+	state.args[2] = ctx->args[2];
 	char *fname = (char *)ctx->args[0];
-	bpf_map_update_elem(&task_paths, &id, fname, 0);
-	
+	bpf_probe_read_kernel_str(&state.fname, sizeof(state.fname), fname);
+
+	bpf_map_update_elem(&enter_ctx, &id, &state, 0);
 	return 0;
 }
 
@@ -619,10 +963,12 @@ int trace_chown_exit(struct trace_event_raw_sys_exit *ctx)
 	__u64 id = bpf_get_current_pid_uid();
 	long ret = ctx->ret;
 	
-	char **fname = bpf_map_lookup_elem(&task_paths, &id);
-	if (fname) {
-		emit_event(IO_CHOWN, ret, *fname);
-		bpf_map_delete_elem(&task_paths, &id);
+	struct enter_state *state = bpf_map_lookup_elem(&enter_ctx, &id);
+	if (state) {
+		char args_str[256];
+		format_args(IO_CHOWN, state, args_str);
+		emit_event(IO_CHOWN, ret, state->fname, args_str);
+		bpf_map_delete_elem(&enter_ctx, &id);
 	}
 	
 	return 0;
@@ -631,10 +977,16 @@ int trace_chown_exit(struct trace_event_raw_sys_exit *ctx)
 SEC("tp/syscalls/sys_enter_fchown")
 int trace_fchown_enter(struct trace_event_raw_sys_enter *ctx)
 {
-	char fname[] = "fchown";
 	__u64 id = bpf_get_current_pid_uid();
-	bpf_map_update_elem(&task_paths, &id, fname, 0);
-	
+	struct enter_state state = {};
+
+	state.type = IO_FCHOWN;
+	state.args[0] = ctx->args[0];
+	state.args[1] = ctx->args[1];
+	state.args[2] = ctx->args[2];
+	bpf_probe_read_kernel_str(&state.fname, sizeof(state.fname), (void *)"fchown");
+
+	bpf_map_update_elem(&enter_ctx, &id, &state, 0);
 	return 0;
 }
 
@@ -643,21 +995,30 @@ int trace_fchown_exit(struct trace_event_raw_sys_exit *ctx)
 {
 	__u64 id = bpf_get_current_pid_uid();
 	long ret = ctx->ret;
-	char fname[] = "fchown";
-	emit_event(IO_FCHOWN, ret, fname);
-	bpf_map_delete_elem(&task_paths, &id);
+	
+	struct enter_state *state = bpf_map_lookup_elem(&enter_ctx, &id);
+	if (state) {
+		char args_str[256];
+		format_args(IO_FCHOWN, state, args_str);
+		emit_event(IO_FCHOWN, ret, state->fname, args_str);
+		bpf_map_delete_elem(&enter_ctx, &id);
+	}
 	
 	return 0;
 }
 
-/* Trace syscall: truncate/ftruncate */
 SEC("tp/syscalls/sys_enter_truncate")
 int trace_truncate_enter(struct trace_event_raw_sys_enter *ctx)
 {
 	__u64 id = bpf_get_current_pid_uid();
+	struct enter_state state = {};
+
+	state.type = IO_TRUNCATE;
+	state.args[1] = ctx->args[1];
 	char *fname = (char *)ctx->args[0];
-	bpf_map_update_elem(&task_paths, &id, fname, 0);
-	
+	bpf_probe_read_kernel_str(&state.fname, sizeof(state.fname), fname);
+
+	bpf_map_update_elem(&enter_ctx, &id, &state, 0);
 	return 0;
 }
 
@@ -667,10 +1028,12 @@ int trace_truncate_exit(struct trace_event_raw_sys_exit *ctx)
 	__u64 id = bpf_get_current_pid_uid();
 	long ret = ctx->ret;
 	
-	char **fname = bpf_map_lookup_elem(&task_paths, &id);
-	if (fname) {
-		emit_event(IO_TRUNCATE, ret, *fname);
-		bpf_map_delete_elem(&task_paths, &id);
+	struct enter_state *state = bpf_map_lookup_elem(&enter_ctx, &id);
+	if (state) {
+		char args_str[256];
+		format_args(IO_TRUNCATE, state, args_str);
+		emit_event(IO_TRUNCATE, ret, state->fname, args_str);
+		bpf_map_delete_elem(&enter_ctx, &id);
 	}
 	
 	return 0;
@@ -679,10 +1042,15 @@ int trace_truncate_exit(struct trace_event_raw_sys_exit *ctx)
 SEC("tp/syscalls/sys_enter_ftruncate")
 int trace_ftruncate_enter(struct trace_event_raw_sys_enter *ctx)
 {
-	char fname[] = "ftruncate";
 	__u64 id = bpf_get_current_pid_uid();
-	bpf_map_update_elem(&task_paths, &id, fname, 0);
-	
+	struct enter_state state = {};
+
+	state.type = IO_FTRUNCATE;
+	state.args[0] = ctx->args[0];
+	state.args[1] = ctx->args[1];
+	bpf_probe_read_kernel_str(&state.fname, sizeof(state.fname), (void *)"ftruncate");
+
+	bpf_map_update_elem(&enter_ctx, &id, &state, 0);
 	return 0;
 }
 
@@ -691,21 +1059,29 @@ int trace_ftruncate_exit(struct trace_event_raw_sys_exit *ctx)
 {
 	__u64 id = bpf_get_current_pid_uid();
 	long ret = ctx->ret;
-	char fname[] = "ftruncate";
-	emit_event(IO_FTRUNCATE, ret, fname);
-	bpf_map_delete_elem(&task_paths, &id);
+	
+	struct enter_state *state = bpf_map_lookup_elem(&enter_ctx, &id);
+	if (state) {
+		char args_str[256];
+		format_args(IO_FTRUNCATE, state, args_str);
+		emit_event(IO_FTRUNCATE, ret, state->fname, args_str);
+		bpf_map_delete_elem(&enter_ctx, &id);
+	}
 	
 	return 0;
 }
 
-/* Trace syscall: link/linkat */
 SEC("tp/syscalls/sys_enter_link")
 int trace_link_enter(struct trace_event_raw_sys_enter *ctx)
 {
 	__u64 id = bpf_get_current_pid_uid();
+	struct enter_state state = {};
+
+	state.type = IO_LINK;
 	char *fname = (char *)ctx->args[0];
-	bpf_map_update_elem(&task_paths, &id, fname, 0);
-	
+	bpf_probe_read_kernel_str(&state.fname, sizeof(state.fname), fname);
+
+	bpf_map_update_elem(&enter_ctx, &id, &state, 0);
 	return 0;
 }
 
@@ -715,10 +1091,12 @@ int trace_link_exit(struct trace_event_raw_sys_exit *ctx)
 	__u64 id = bpf_get_current_pid_uid();
 	long ret = ctx->ret;
 	
-	char **fname = bpf_map_lookup_elem(&task_paths, &id);
-	if (fname) {
-		emit_event(IO_LINK, ret, *fname);
-		bpf_map_delete_elem(&task_paths, &id);
+	struct enter_state *state = bpf_map_lookup_elem(&enter_ctx, &id);
+	if (state) {
+		char args_str[256];
+		format_args(IO_LINK, state, args_str);
+		emit_event(IO_LINK, ret, state->fname, args_str);
+		bpf_map_delete_elem(&enter_ctx, &id);
 	}
 	
 	return 0;
@@ -728,9 +1106,16 @@ SEC("tp/syscalls/sys_enter_linkat")
 int trace_linkat_enter(struct trace_event_raw_sys_enter *ctx)
 {
 	__u64 id = bpf_get_current_pid_uid();
+	struct enter_state state = {};
+
+	state.type = IO_LINKAT;
+	state.args[0] = ctx->args[0];
+	state.args[2] = ctx->args[2];
+	state.args[4] = ctx->args[4];
 	char *fname = (char *)ctx->args[1];
-	bpf_map_update_elem(&task_paths, &id, fname, 0);
-	
+	bpf_probe_read_kernel_str(&state.fname, sizeof(state.fname), fname);
+
+	bpf_map_update_elem(&enter_ctx, &id, &state, 0);
 	return 0;
 }
 
@@ -740,23 +1125,28 @@ int trace_linkat_exit(struct trace_event_raw_sys_exit *ctx)
 	__u64 id = bpf_get_current_pid_uid();
 	long ret = ctx->ret;
 	
-	char **fname = bpf_map_lookup_elem(&task_paths, &id);
-	if (fname) {
-		emit_event(IO_LINKAT, ret, *fname);
-		bpf_map_delete_elem(&task_paths, &id);
+	struct enter_state *state = bpf_map_lookup_elem(&enter_ctx, &id);
+	if (state) {
+		char args_str[256];
+		format_args(IO_LINKAT, state, args_str);
+		emit_event(IO_LINKAT, ret, state->fname, args_str);
+		bpf_map_delete_elem(&enter_ctx, &id);
 	}
 	
 	return 0;
 }
 
-/* Trace syscall: symlink/symlinkat */
 SEC("tp/syscalls/sys_enter_symlink")
 int trace_symlink_enter(struct trace_event_raw_sys_enter *ctx)
 {
 	__u64 id = bpf_get_current_pid_uid();
-	char *fname = (char *)ctx->args[1];
-	bpf_map_update_elem(&task_paths, &id, fname, 0);
-	
+	struct enter_state state = {};
+
+	state.type = IO_SYMLINK;
+	char *fname = (char *)ctx->args[0];
+	bpf_probe_read_kernel_str(&state.fname, sizeof(state.fname), fname);
+
+	bpf_map_update_elem(&enter_ctx, &id, &state, 0);
 	return 0;
 }
 
@@ -766,10 +1156,12 @@ int trace_symlink_exit(struct trace_event_raw_sys_exit *ctx)
 	__u64 id = bpf_get_current_pid_uid();
 	long ret = ctx->ret;
 	
-	char **fname = bpf_map_lookup_elem(&task_paths, &id);
-	if (fname) {
-		emit_event(IO_SYMLINK, ret, *fname);
-		bpf_map_delete_elem(&task_paths, &id);
+	struct enter_state *state = bpf_map_lookup_elem(&enter_ctx, &id);
+	if (state) {
+		char args_str[256];
+		format_args(IO_SYMLINK, state, args_str);
+		emit_event(IO_SYMLINK, ret, state->fname, args_str);
+		bpf_map_delete_elem(&enter_ctx, &id);
 	}
 	
 	return 0;
@@ -779,9 +1171,14 @@ SEC("tp/syscalls/sys_enter_symlinkat")
 int trace_symlinkat_enter(struct trace_event_raw_sys_enter *ctx)
 {
 	__u64 id = bpf_get_current_pid_uid();
-	char *fname = (char *)ctx->args[1];
-	bpf_map_update_elem(&task_paths, &id, fname, 0);
-	
+	struct enter_state state = {};
+
+	state.type = IO_SYMLINKAT;
+	state.args[1] = ctx->args[1];
+	char *fname = (char *)ctx->args[0];
+	bpf_probe_read_kernel_str(&state.fname, sizeof(state.fname), fname);
+
+	bpf_map_update_elem(&enter_ctx, &id, &state, 0);
 	return 0;
 }
 
@@ -791,23 +1188,29 @@ int trace_symlinkat_exit(struct trace_event_raw_sys_exit *ctx)
 	__u64 id = bpf_get_current_pid_uid();
 	long ret = ctx->ret;
 	
-	char **fname = bpf_map_lookup_elem(&task_paths, &id);
-	if (fname) {
-		emit_event(IO_SYMLINKAT, ret, *fname);
-		bpf_map_delete_elem(&task_paths, &id);
+	struct enter_state *state = bpf_map_lookup_elem(&enter_ctx, &id);
+	if (state) {
+		char args_str[256];
+		format_args(IO_SYMLINKAT, state, args_str);
+		emit_event(IO_SYMLINKAT, ret, state->fname, args_str);
+		bpf_map_delete_elem(&enter_ctx, &id);
 	}
 	
 	return 0;
 }
 
-/* Trace syscall: readlink/readlinkat */
 SEC("tp/syscalls/sys_enter_readlink")
 int trace_readlink_enter(struct trace_event_raw_sys_enter *ctx)
 {
 	__u64 id = bpf_get_current_pid_uid();
+	struct enter_state state = {};
+
+	state.type = IO_READLINK;
+	state.args[2] = ctx->args[2];
 	char *fname = (char *)ctx->args[0];
-	bpf_map_update_elem(&task_paths, &id, fname, 0);
-	
+	bpf_probe_read_kernel_str(&state.fname, sizeof(state.fname), fname);
+
+	bpf_map_update_elem(&enter_ctx, &id, &state, 0);
 	return 0;
 }
 
@@ -817,10 +1220,12 @@ int trace_readlink_exit(struct trace_event_raw_sys_exit *ctx)
 	__u64 id = bpf_get_current_pid_uid();
 	long ret = ctx->ret;
 	
-	char **fname = bpf_map_lookup_elem(&task_paths, &id);
-	if (fname) {
-		emit_event(IO_READLINK, ret, *fname);
-		bpf_map_delete_elem(&task_paths, &id);
+	struct enter_state *state = bpf_map_lookup_elem(&enter_ctx, &id);
+	if (state) {
+		char args_str[256];
+		format_args(IO_READLINK, state, args_str);
+		emit_event(IO_READLINK, ret, state->fname, args_str);
+		bpf_map_delete_elem(&enter_ctx, &id);
 	}
 	
 	return 0;
@@ -830,9 +1235,15 @@ SEC("tp/syscalls/sys_enter_readlinkat")
 int trace_readlinkat_enter(struct trace_event_raw_sys_enter *ctx)
 {
 	__u64 id = bpf_get_current_pid_uid();
+	struct enter_state state = {};
+
+	state.type = IO_READLINKAT;
+	state.args[0] = ctx->args[0];
+	state.args[3] = ctx->args[3];
 	char *fname = (char *)ctx->args[1];
-	bpf_map_update_elem(&task_paths, &id, fname, 0);
-	
+	bpf_probe_read_kernel_str(&state.fname, sizeof(state.fname), fname);
+
+	bpf_map_update_elem(&enter_ctx, &id, &state, 0);
 	return 0;
 }
 
@@ -842,10 +1253,12 @@ int trace_readlinkat_exit(struct trace_event_raw_sys_exit *ctx)
 	__u64 id = bpf_get_current_pid_uid();
 	long ret = ctx->ret;
 	
-	char **fname = bpf_map_lookup_elem(&task_paths, &id);
-	if (fname) {
-		emit_event(IO_READLINKAT, ret, *fname);
-		bpf_map_delete_elem(&task_paths, &id);
+	struct enter_state *state = bpf_map_lookup_elem(&enter_ctx, &id);
+	if (state) {
+		char args_str[256];
+		format_args(IO_READLINKAT, state, args_str);
+		emit_event(IO_READLINKAT, ret, state->fname, args_str);
+		bpf_map_delete_elem(&enter_ctx, &id);
 	}
 	
 	return 0;
