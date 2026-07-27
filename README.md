@@ -169,6 +169,28 @@ Example arguments:
 - `mkdir("/tmp/newdir", mode=0755)` → mode=0755
 - `chown("/etc/config", uid=1000 gid=1000)` → uid=1000 gid=1000
 
+#### Async I/O Syscalls
+
+iosnoop also traces asynchronous I/O operations for both io_uring and libaio interfaces:
+
+- **io_uring syscalls**:
+  - `io_uring_enter`: `fd=NNN to_submit=NNN min_complete=NNN flags=0xNNNN`
+  - `io_uring_setup`: `entries=NNN flags=0xNNNN`
+  - `io_uring_register`: `fd=NNN opcode=NNN nr_args=NNN`
+- **libaio syscalls**:
+  - `io_setup`: `entries=NNN`
+  - `io_submit`: `ctx_id=NNN nr=NNN`
+  - `io_getevents`: `ctx_id=NNN min_nr=NNN nr=NNN`
+  - `io_cancel`: `ctx_id=NNN`
+  - `io_destroy`: `ctx_id=NNN`
+
+Example async I/O output:
+```
+TIME     | PID     | COMM     | TYPE          | RET     | ARGS
+14:32:15 | 12345   | app      | URING_ENTER   | 1       | fd=3 to_submit=10 min_complete=0 flags=0x0
+14:32:15 | 12346   | app      | IO_SUBMIT     | 5       | ctx_id=139876543210 nr=5
+```
+
 ### ioslower
 
 ```bash

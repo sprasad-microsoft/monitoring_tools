@@ -40,6 +40,15 @@
 #define IO_WRITEV	33
 #define IO_PREADV	34
 #define IO_PWRITEV	35
+/* Async I/O syscalls */
+#define IO_URING_ENTER	36
+#define IO_URING_SETUP	37
+#define IO_URING_REGISTER	38
+#define IO_SETUP	39
+#define IO_SUBMIT	40
+#define IO_GETEVENTS	41
+#define IO_CANCEL	42
+#define IO_DESTROY	43
 
 struct io_event {
 	__u64 ts;
@@ -312,6 +321,62 @@ static __always_inline void format_args(__u8 type, struct enter_state *state, ch
 		__u64 iovcnt = state->args[2];
 		__u64 offset = state->args[3];
 		bpf_snprintf(args_str, 256, "fd=%lld iovcnt=%llu offset=%llu", fd, iovcnt, offset);
+		break;
+	}
+	/* io_uring_enter(fd, to_submit, min_complete, flags) */
+	case IO_URING_ENTER: {
+		__u64 fd = state->args[0];
+		__u64 to_submit = state->args[1];
+		__u64 min_complete = state->args[2];
+		__u64 flags = state->args[3];
+		bpf_snprintf(args_str, 256, "fd=%lld to_submit=%llu min_complete=%llu flags=0x%llx", fd, to_submit, min_complete, flags);
+		break;
+	}
+	/* io_uring_setup(entries, params) */
+	case IO_URING_SETUP: {
+		__u64 entries = state->args[0];
+		bpf_snprintf(args_str, 256, "entries=%llu", entries);
+		break;
+	}
+	/* io_uring_register(fd, opcode, arg, nr_args) */
+	case IO_URING_REGISTER: {
+		__u64 fd = state->args[0];
+		__u64 opcode = state->args[1];
+		__u64 nr_args = state->args[3];
+		bpf_snprintf(args_str, 256, "fd=%lld opcode=%llu nr_args=%llu", fd, opcode, nr_args);
+		break;
+	}
+	/* io_setup(nr_events, ctx_id_ptr) */
+	case IO_SETUP: {
+		__u64 nr_events = state->args[0];
+		bpf_snprintf(args_str, 256, "nr_events=%llu", nr_events);
+		break;
+	}
+	/* io_submit(ctx_id, nr, iocbs) */
+	case IO_SUBMIT: {
+		__u64 ctx_id = state->args[0];
+		__u64 nr = state->args[1];
+		bpf_snprintf(args_str, 256, "ctx_id=%llu nr=%llu", ctx_id, nr);
+		break;
+	}
+	/* io_getevents(ctx_id, min_nr, nr, events) */
+	case IO_GETEVENTS: {
+		__u64 ctx_id = state->args[0];
+		__u64 min_nr = state->args[1];
+		__u64 nr = state->args[2];
+		bpf_snprintf(args_str, 256, "ctx_id=%llu min_nr=%llu nr=%llu", ctx_id, min_nr, nr);
+		break;
+	}
+	/* io_cancel(ctx_id, iocb) */
+	case IO_CANCEL: {
+		__u64 ctx_id = state->args[0];
+		bpf_snprintf(args_str, 256, "ctx_id=%llu", ctx_id);
+		break;
+	}
+	/* io_destroy(ctx_id) */
+	case IO_DESTROY: {
+		__u64 ctx_id = state->args[0];
+		bpf_snprintf(args_str, 256, "ctx_id=%llu", ctx_id);
 		break;
 	}
 	default:
@@ -1509,6 +1574,270 @@ int trace_pwritev_exit(struct trace_event_raw_sys_exit *ctx)
 		bpf_map_delete_elem(&enter_ctx, &id);
 	}
 	
+	return 0;
+}
+
+/* io_uring_enter */
+SEC("tp/syscalls/sys_enter_io_uring_enter")
+int trace_io_uring_enter_enter(struct trace_event_raw_sys_enter *ctx)
+{
+	__u64 id = bpf_get_current_pid_uid();
+	struct enter_state state = {};
+
+	state.type = IO_URING_ENTER;
+	state.args[0] = ctx->args[0];
+	state.args[1] = ctx->args[1];
+	state.args[2] = ctx->args[2];
+	state.args[3] = ctx->args[3];
+	bpf_probe_read_kernel_str(&state.fname, sizeof(state.fname), (void *)"io_uring_enter");
+
+	bpf_map_update_elem(&enter_ctx, &id, &state, 0);
+	return 0;
+}
+
+SEC("tp/syscalls/sys_exit_io_uring_enter")
+int trace_io_uring_enter_exit(struct trace_event_raw_sys_exit *ctx)
+{
+	__u64 id = bpf_get_current_pid_uid();
+	long ret = ctx->ret;
+
+	struct enter_state *state = bpf_map_lookup_elem(&enter_ctx, &id);
+	if (state) {
+		char args_str[256];
+		format_args(IO_URING_ENTER, state, args_str);
+		emit_event(IO_URING_ENTER, ret, state->fname, args_str);
+		bpf_map_delete_elem(&enter_ctx, &id);
+	}
+
+	return 0;
+}
+
+/* io_uring_setup */
+SEC("tp/syscalls/sys_enter_io_uring_setup")
+int trace_io_uring_setup_enter(struct trace_event_raw_sys_enter *ctx)
+{
+	__u64 id = bpf_get_current_pid_uid();
+	struct enter_state state = {};
+
+	state.type = IO_URING_SETUP;
+	state.args[0] = ctx->args[0];
+	bpf_probe_read_kernel_str(&state.fname, sizeof(state.fname), (void *)"io_uring_setup");
+
+	bpf_map_update_elem(&enter_ctx, &id, &state, 0);
+	return 0;
+}
+
+SEC("tp/syscalls/sys_exit_io_uring_setup")
+int trace_io_uring_setup_exit(struct trace_event_raw_sys_exit *ctx)
+{
+	__u64 id = bpf_get_current_pid_uid();
+	long ret = ctx->ret;
+
+	struct enter_state *state = bpf_map_lookup_elem(&enter_ctx, &id);
+	if (state) {
+		char args_str[256];
+		format_args(IO_URING_SETUP, state, args_str);
+		emit_event(IO_URING_SETUP, ret, state->fname, args_str);
+		bpf_map_delete_elem(&enter_ctx, &id);
+	}
+
+	return 0;
+}
+
+/* io_uring_register */
+SEC("tp/syscalls/sys_enter_io_uring_register")
+int trace_io_uring_register_enter(struct trace_event_raw_sys_enter *ctx)
+{
+	__u64 id = bpf_get_current_pid_uid();
+	struct enter_state state = {};
+
+	state.type = IO_URING_REGISTER;
+	state.args[0] = ctx->args[0];
+	state.args[1] = ctx->args[1];
+	state.args[3] = ctx->args[3];
+	bpf_probe_read_kernel_str(&state.fname, sizeof(state.fname), (void *)"io_uring_register");
+
+	bpf_map_update_elem(&enter_ctx, &id, &state, 0);
+	return 0;
+}
+
+SEC("tp/syscalls/sys_exit_io_uring_register")
+int trace_io_uring_register_exit(struct trace_event_raw_sys_exit *ctx)
+{
+	__u64 id = bpf_get_current_pid_uid();
+	long ret = ctx->ret;
+
+	struct enter_state *state = bpf_map_lookup_elem(&enter_ctx, &id);
+	if (state) {
+		char args_str[256];
+		format_args(IO_URING_REGISTER, state, args_str);
+		emit_event(IO_URING_REGISTER, ret, state->fname, args_str);
+		bpf_map_delete_elem(&enter_ctx, &id);
+	}
+
+	return 0;
+}
+
+/* io_setup */
+SEC("tp/syscalls/sys_enter_io_setup")
+int trace_io_setup_enter(struct trace_event_raw_sys_enter *ctx)
+{
+	__u64 id = bpf_get_current_pid_uid();
+	struct enter_state state = {};
+
+	state.type = IO_SETUP;
+	state.args[0] = ctx->args[0];
+	bpf_probe_read_kernel_str(&state.fname, sizeof(state.fname), (void *)"io_setup");
+
+	bpf_map_update_elem(&enter_ctx, &id, &state, 0);
+	return 0;
+}
+
+SEC("tp/syscalls/sys_exit_io_setup")
+int trace_io_setup_exit(struct trace_event_raw_sys_exit *ctx)
+{
+	__u64 id = bpf_get_current_pid_uid();
+	long ret = ctx->ret;
+
+	struct enter_state *state = bpf_map_lookup_elem(&enter_ctx, &id);
+	if (state) {
+		char args_str[256];
+		format_args(IO_SETUP, state, args_str);
+		emit_event(IO_SETUP, ret, state->fname, args_str);
+		bpf_map_delete_elem(&enter_ctx, &id);
+	}
+
+	return 0;
+}
+
+/* io_submit */
+SEC("tp/syscalls/sys_enter_io_submit")
+int trace_io_submit_enter(struct trace_event_raw_sys_enter *ctx)
+{
+	__u64 id = bpf_get_current_pid_uid();
+	struct enter_state state = {};
+
+	state.type = IO_SUBMIT;
+	state.args[0] = ctx->args[0];
+	state.args[1] = ctx->args[1];
+	bpf_probe_read_kernel_str(&state.fname, sizeof(state.fname), (void *)"io_submit");
+
+	bpf_map_update_elem(&enter_ctx, &id, &state, 0);
+	return 0;
+}
+
+SEC("tp/syscalls/sys_exit_io_submit")
+int trace_io_submit_exit(struct trace_event_raw_sys_exit *ctx)
+{
+	__u64 id = bpf_get_current_pid_uid();
+	long ret = ctx->ret;
+
+	struct enter_state *state = bpf_map_lookup_elem(&enter_ctx, &id);
+	if (state) {
+		char args_str[256];
+		format_args(IO_SUBMIT, state, args_str);
+		emit_event(IO_SUBMIT, ret, state->fname, args_str);
+		bpf_map_delete_elem(&enter_ctx, &id);
+	}
+
+	return 0;
+}
+
+/* io_getevents */
+SEC("tp/syscalls/sys_enter_io_getevents")
+int trace_io_getevents_enter(struct trace_event_raw_sys_enter *ctx)
+{
+	__u64 id = bpf_get_current_pid_uid();
+	struct enter_state state = {};
+
+	state.type = IO_GETEVENTS;
+	state.args[0] = ctx->args[0];
+	state.args[1] = ctx->args[1];
+	state.args[2] = ctx->args[2];
+	bpf_probe_read_kernel_str(&state.fname, sizeof(state.fname), (void *)"io_getevents");
+
+	bpf_map_update_elem(&enter_ctx, &id, &state, 0);
+	return 0;
+}
+
+SEC("tp/syscalls/sys_exit_io_getevents")
+int trace_io_getevents_exit(struct trace_event_raw_sys_exit *ctx)
+{
+	__u64 id = bpf_get_current_pid_uid();
+	long ret = ctx->ret;
+
+	struct enter_state *state = bpf_map_lookup_elem(&enter_ctx, &id);
+	if (state) {
+		char args_str[256];
+		format_args(IO_GETEVENTS, state, args_str);
+		emit_event(IO_GETEVENTS, ret, state->fname, args_str);
+		bpf_map_delete_elem(&enter_ctx, &id);
+	}
+
+	return 0;
+}
+
+/* io_cancel */
+SEC("tp/syscalls/sys_enter_io_cancel")
+int trace_io_cancel_enter(struct trace_event_raw_sys_enter *ctx)
+{
+	__u64 id = bpf_get_current_pid_uid();
+	struct enter_state state = {};
+
+	state.type = IO_CANCEL;
+	state.args[0] = ctx->args[0];
+	bpf_probe_read_kernel_str(&state.fname, sizeof(state.fname), (void *)"io_cancel");
+
+	bpf_map_update_elem(&enter_ctx, &id, &state, 0);
+	return 0;
+}
+
+SEC("tp/syscalls/sys_exit_io_cancel")
+int trace_io_cancel_exit(struct trace_event_raw_sys_exit *ctx)
+{
+	__u64 id = bpf_get_current_pid_uid();
+	long ret = ctx->ret;
+
+	struct enter_state *state = bpf_map_lookup_elem(&enter_ctx, &id);
+	if (state) {
+		char args_str[256];
+		format_args(IO_CANCEL, state, args_str);
+		emit_event(IO_CANCEL, ret, state->fname, args_str);
+		bpf_map_delete_elem(&enter_ctx, &id);
+	}
+
+	return 0;
+}
+
+/* io_destroy */
+SEC("tp/syscalls/sys_enter_io_destroy")
+int trace_io_destroy_enter(struct trace_event_raw_sys_enter *ctx)
+{
+	__u64 id = bpf_get_current_pid_uid();
+	struct enter_state state = {};
+
+	state.type = IO_DESTROY;
+	state.args[0] = ctx->args[0];
+	bpf_probe_read_kernel_str(&state.fname, sizeof(state.fname), (void *)"io_destroy");
+
+	bpf_map_update_elem(&enter_ctx, &id, &state, 0);
+	return 0;
+}
+
+SEC("tp/syscalls/sys_exit_io_destroy")
+int trace_io_destroy_exit(struct trace_event_raw_sys_exit *ctx)
+{
+	__u64 id = bpf_get_current_pid_uid();
+	long ret = ctx->ret;
+
+	struct enter_state *state = bpf_map_lookup_elem(&enter_ctx, &id);
+	if (state) {
+		char args_str[256];
+		format_args(IO_DESTROY, state, args_str);
+		emit_event(IO_DESTROY, ret, state->fname, args_str);
+		bpf_map_delete_elem(&enter_ctx, &id);
+	}
+
 	return 0;
 }
 
