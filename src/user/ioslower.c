@@ -46,6 +46,15 @@
 #define SC_WRITEV	34
 #define SC_PREADV	35
 #define SC_PWRITEV	36
+/* Async I/O syscalls */
+#define SC_URING_ENTER	37
+#define SC_URING_SETUP	38
+#define SC_URING_REGISTER	39
+#define SC_SETUP	40
+#define SC_SUBMIT	41
+#define SC_GETEVENTS	42
+#define SC_CANCEL	43
+#define SC_DESTROY	44
 
 struct ioslower_event {
 	__u64 ts;
@@ -201,6 +210,22 @@ const char *syscall_name(int type)
 		return "preadv";
 	case SC_PWRITEV:
 		return "pwritev";
+	case SC_URING_ENTER:
+		return "uring_enter";
+	case SC_URING_SETUP:
+		return "uring_setup";
+	case SC_URING_REGISTER:
+		return "uring_register";
+	case SC_SETUP:
+		return "io_setup";
+	case SC_SUBMIT:
+		return "io_submit";
+	case SC_GETEVENTS:
+		return "io_getevents";
+	case SC_CANCEL:
+		return "io_cancel";
+	case SC_DESTROY:
+		return "io_destroy";
 	default:
 		return "UNKNOWN";
 	}

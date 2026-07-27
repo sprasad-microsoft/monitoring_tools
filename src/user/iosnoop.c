@@ -46,6 +46,15 @@
 #define IO_WRITEV	33
 #define IO_PREADV	34
 #define IO_PWRITEV	35
+/* Async I/O syscalls */
+#define IO_URING_ENTER	36
+#define IO_URING_SETUP	37
+#define IO_URING_REGISTER	38
+#define IO_SETUP	39
+#define IO_SUBMIT	40
+#define IO_GETEVENTS	41
+#define IO_CANCEL	42
+#define IO_DESTROY	43
 
 struct io_event {
 	__u64 ts;
@@ -199,6 +208,22 @@ const char *io_type_str(int type)
 		return "PREADV";
 	case IO_PWRITEV:
 		return "PWRITEV";
+	case IO_URING_ENTER:
+		return "URING_ENTER";
+	case IO_URING_SETUP:
+		return "URING_SETUP";
+	case IO_URING_REGISTER:
+		return "URING_REGISTER";
+	case IO_SETUP:
+		return "IO_SETUP";
+	case IO_SUBMIT:
+		return "IO_SUBMIT";
+	case IO_GETEVENTS:
+		return "IO_GETEVENTS";
+	case IO_CANCEL:
+		return "IO_CANCEL";
+	case IO_DESTROY:
+		return "IO_DESTROY";
 	default:
 		return "UNKNOWN";
 	}
