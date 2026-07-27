@@ -46,6 +46,15 @@ clean:
 	$(call msg,CLEAN,$(OUTPUT) $(BINOUT))
 	$(Q)rm -rf $(OUTPUT) $(BINOUT)/*
 
+.PHONY: tests
+tests: tests/test_syscalls
+	$(call msg,RUN,tests/test_syscalls)
+	$(Q)tests/test_syscalls
+
+tests/test_syscalls: tests/test_syscalls.c
+	$(call msg,CC,$@)
+	$(Q)$(CC) -O0 -Wall -o $@ $<
+
 $(OUTPUT):
 	$(call msg,MKDIR,$@)
 	$(Q)mkdir -p $@

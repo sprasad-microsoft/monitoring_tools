@@ -54,10 +54,11 @@
 #define SC_SUBMIT	41
 #define SC_GETEVENTS	42
 #define SC_CANCEL	43
-#define SC_DESTROY	44/* Memory mapping syscalls */
-#define SC_MMAP\t45
-#define SC_MMAP2\t46
-#define SC_MUNMAP\t47
+#define SC_DESTROY	44
+/* Memory mapping syscalls */
+#define SC_MMAP		45
+#define SC_MMAP2		46
+#define SC_MUNMAP	47
 struct ioslower_event {
 	__u64 ts;
 	__u32 pid;
@@ -272,7 +273,9 @@ int main(int argc, char **argv)
 	struct ring_buffer *rb = NULL;
 	int err;
 	__u32 zero = 0;
-	__u64 *config_val;
+
+	/* Unbuffered stdout so every event line reaches files/pipes immediately */
+	setvbuf(stdout, NULL, _IONBF, 0);
 
 	err = argp_parse(&argp, argc, argv, 0, NULL, NULL);
 	if (err)
@@ -299,7 +302,7 @@ int main(int argc, char **argv)
 	}
 
 	/* Set latency threshold */
-	err = bpf_map_update_elem(bpf_object__find_map_by_name(skel->obj, "config"),
+	err = bpf_map_update_elem(bpf_map__fd(skel->maps.threshold_config),
 				  &zero, &opts.min_us, 0);
 	if (err < 0) {
 		fprintf(stderr, "Failed to set threshold: %d\n", err);
@@ -324,10 +327,7 @@ int main(int argc, char **argv)
 	printf("%-8s %-6s %-16s %-12s %-10s %-8s %s\n",
 		"TIME", "PID", "COMM", "SYSCALL", "LATENCY(ms)", "STATUS", "PATH");
 
-	if (opts.duration) {
-		sleep(opts.duration);
-		exiting = 1;
-	}
+	time_t deadline = opts.duration ? time(NULL) + opts.duration : 0;
 
 	while (!exiting) {
 		err = ring_buffer__poll(rb, 100);
@@ -335,6 +335,8 @@ int main(int argc, char **argv)
 			fprintf(stderr, "Error polling ring buffer: %d\n", err);
 			break;
 		}
+		if (deadline && time(NULL) >= deadline)
+			break;
 	}
 
 cleanup:

@@ -271,6 +271,9 @@ int main(int argc, char **argv)
 	struct ring_buffer *rb = NULL;
 	int err;
 
+	/* Unbuffered stdout so every event line reaches files/pipes immediately */
+	setvbuf(stdout, NULL, _IONBF, 0);
+
 	err = argp_parse(&argp, argc, argv, 0, NULL, NULL);
 	if (err)
 		return err;
@@ -307,7 +310,7 @@ int main(int argc, char **argv)
 		}
 
 		dev_id = st.st_dev;
-		err = bpf_map_update_elem(bpf_object__find_map_by_name(skel->obj, "mount_filter"),
+		err = bpf_map_update_elem(bpf_map__fd(bpf_object__find_map_by_name(skel->obj, "mount_filter")),
 					  &dev_id, &value, 0);
 		if (err < 0) {
 			fprintf(stderr, "Failed to set mount filter: %d\n", err);
@@ -333,10 +336,7 @@ int main(int argc, char **argv)
 	printf("%-8s %-6s %-16s %-12s %6s %-30s %s\n",
 		"TIME", "PID", "COMM", "TYPE", "RET", "ARGS", "PATH");
 
-	if (opts.duration) {
-		sleep(opts.duration);
-		exiting = 1;
-	}
+	time_t deadline = opts.duration ? time(NULL) + opts.duration : 0;
 
 	while (!exiting) {
 		err = ring_buffer__poll(rb, 100);
@@ -344,6 +344,8 @@ int main(int argc, char **argv)
 			fprintf(stderr, "Error polling ring buffer: %d\n", err);
 			break;
 		}
+		if (deadline && time(NULL) >= deadline)
+			break;
 	}
 
 cleanup:
