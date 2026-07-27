@@ -121,17 +121,17 @@ sudo ./src/bin/iosnoop -m /tmp -d 60            # trace /tmp mount for 60 second
 #### Output Format
 
 ```
-TIME     PID    COMM             TYPE       RET PATH
-14:23:45 12345  bash             OPEN         3 /tmp/testfile.txt
-14:23:45 12345  bash             READ       512 read
-14:23:45 12345  bash             WRITE      512 write
-14:23:45 12345  bash             MKDIR        0 mode=0755           /tmp/newdir
-14:23:45 12345  bash             UNLINK       0 -                   /tmp/oldfile.txt
-14:23:45 12345  bash             MOUNT        0 flags=0x0           /mnt/share
-14:23:45 12345  bash             CHMOD        0 mode=0644           /tmp/file.txt
-14:23:45 12345  bash             RENAME       0 rename              /tmp/old.txt
-14:23:45 12345  bash             READLINK    12 size=256            /etc/passwd
-14:23:45 12345  bash             CLOSE        0 fd=3                close
+TIME     PID    COMM             TYPE       RET ARGS                       PATH
+14:23:45 12345  bash             OPEN         3 flags=0x241 mode=0644      /tmp/testfile.txt
+14:23:45 12345  bash             READ       512 fd=3 size=4096              read
+14:23:45 12345  bash             WRITE      512 fd=3 size=1024              write
+14:23:45 12345  bash             MKDIR        0 mode=0755                   /tmp/newdir
+14:23:45 12345  bash             UNLINK       0 -                           /tmp/oldfile.txt
+14:23:45 12345  bash             MOUNT        0 flags=0x0                   /mnt/share
+14:23:45 12345  bash             CHMOD        0 mode=0644                   /tmp/file.txt
+14:23:45 12345  bash             RENAME       0 -                           /tmp/old.txt
+14:23:45 12345  bash             READLINK    12 size=256                    /etc/passwd
+14:23:45 12345  bash             CLOSE        0 fd=3                        close
 ```
 
 **Columns:**
@@ -238,45 +238,4 @@ TIME     PID    COMM             SYSCALL      LATENCY(ms) STATUS PATH
 - **STATUS**: OK for successful syscalls (ret >= 0), ERR for errors (ret < 0)
 - **PATH**: File path (for path-based syscalls) or syscall name (for fd-based syscalls)
 
-### aiosnoop
 
-Trace asynchronous I/O operations via io_uring and libaio (AIO) syscalls.
-
-```bash
-sudo ./src/bin/aiosnoop                         # trace all async I/O syscalls
-sudo ./src/bin/aiosnoop -v                      # verbose output
-sudo ./src/bin/aiosnoop -d 30                   # trace for 30 seconds
-```
-
-#### Output Format
-
-```
-TIME     PID    COMM             SYSCALL          RET    ARGS
-14:23:45 12345  myapp            uring_enter      3      fd=4 to_submit=2 min_complete=0 flags=0x0
-14:23:45 12345  myapp            io_submit        2      ctx_id=140000 nr=2
-14:23:45 12345  myapp            io_getevents     1      ctx_id=140000 min_nr=1 nr=10
-14:23:45 12346  aioapp           uring_setup      4      entries=256
-14:23:45 12347  oldaio           io_setup         0      nr_events=128
-```
-
-**Columns:**
-- **TIME**: Timestamp (HH:MM:SS)
-- **PID**: Process ID
-- **COMM**: Command name (truncated to 16 chars)
-- **SYSCALL**: Async I/O syscall name (uring_enter, io_submit, io_getevents, etc.)
-- **RET**: Syscall return value (fd, number of operations, etc.; negative indicates error)
-- **ARGS**: Syscall arguments with context (file descriptors, operation counts, flags, etc.)
-
-#### Supported Syscalls
-
-**io_uring (modern async I/O)**:
-- `io_uring_enter` - submit I/O requests and/or wait for completions
-- `io_uring_setup` - create new io_uring instance
-- `io_uring_register` - register buffers/files for optimized access
-
-**libaio (legacy AIO, x86/x64 only)**:
-- `io_setup` - create AIO context
-- `io_submit` - submit async I/O operations
-- `io_getevents` - retrieve completion events
-- `io_cancel` - cancel pending operations
-- `io_destroy` - destroy AIO context
