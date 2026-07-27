@@ -149,6 +149,8 @@ iosnoop captures and displays human-readable syscall arguments alongside the pat
 
 - **File Operations**: `flags=0xNNNN mode=0NNN` (for open/openat: permission bits and flags)
 - **I/O Operations**: `fd=NNN size=NNN` (for read/write: file descriptor and buffer size)
+- **Vector I/O Operations**: `fd=NNN iovcnt=NNN` (for readv/writev: file descriptor and iovec count) or `fd=NNN iovcnt=NNN offset=NNN` (for preadv/pwritev)
+- **Positioned I/O Operations**: `fd=NNN size=NNN offset=NNN` (for pread64/pwrite64: file descriptor, buffer size, and file offset)
 - **Directory Operations**: `mode=0NNN` (for mkdir: directory permission bits)
 - **Deletion**: `dirfd=NNN flags=0xNNNN` (for unlinkat: descriptor and flags)
 - **Rename**: `olddirfd=NNN newdirfd=NNN [flags=0xNNNN]` (directory context and optionally flags for renameat2)
@@ -161,6 +163,9 @@ iosnoop captures and displays human-readable syscall arguments alongside the pat
 Example arguments:
 - `open("/tmp/test.txt", flags=0x241 mode=0644)` → flags=0x241 mode=0644
 - `read(fd=3, size=4096)` → fd=3 size=4096
+- `readv(fd=3, iovcnt=2)` → fd=3 iovcnt=2
+- `pread64(fd=3, size=4096, offset=1024)` → fd=3 size=4096 offset=1024
+- `preadv(fd=3, iovcnt=2, offset=2048)` → fd=3 iovcnt=2 offset=2048
 - `mkdir("/tmp/newdir", mode=0755)` → mode=0755
 - `chown("/etc/config", uid=1000 gid=1000)` → uid=1000 gid=1000
 

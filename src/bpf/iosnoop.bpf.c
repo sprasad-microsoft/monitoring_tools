@@ -34,6 +34,12 @@
 #define IO_SYMLINKAT	27
 #define IO_READLINK	28
 #define IO_READLINKAT	29
+#define IO_PREAD64	30
+#define IO_PWRITE64	31
+#define IO_READV	32
+#define IO_WRITEV	33
+#define IO_PREADV	34
+#define IO_PWRITEV	35
 
 struct io_event {
 	__u64 ts;
@@ -260,6 +266,52 @@ static __always_inline void format_args(__u8 type, struct enter_state *state, ch
 		__u64 fd = state->args[0];
 		__u64 mode = state->args[1];
 		bpf_snprintf(args_str, 256, "fd=%lld mode=0%o", fd, mode);
+		break;
+	}
+	/* pread64(fd, buf, size, offset) */
+	case IO_PREAD64: {
+		__u64 fd = state->args[0];
+		__u64 size = state->args[2];
+		__u64 offset = state->args[3];
+		bpf_snprintf(args_str, 256, "fd=%lld size=%llu offset=%llu", fd, size, offset);
+		break;
+	}
+	/* pwrite64(fd, buf, size, offset) */
+	case IO_PWRITE64: {
+		__u64 fd = state->args[0];
+		__u64 size = state->args[2];
+		__u64 offset = state->args[3];
+		bpf_snprintf(args_str, 256, "fd=%lld size=%llu offset=%llu", fd, size, offset);
+		break;
+	}
+	/* readv(fd, iov, iovcnt) */
+	case IO_READV: {
+		__u64 fd = state->args[0];
+		__u64 iovcnt = state->args[2];
+		bpf_snprintf(args_str, 256, "fd=%lld iovcnt=%llu", fd, iovcnt);
+		break;
+	}
+	/* writev(fd, iov, iovcnt) */
+	case IO_WRITEV: {
+		__u64 fd = state->args[0];
+		__u64 iovcnt = state->args[2];
+		bpf_snprintf(args_str, 256, "fd=%lld iovcnt=%llu", fd, iovcnt);
+		break;
+	}
+	/* preadv(fd, iov, iovcnt, offset) */
+	case IO_PREADV: {
+		__u64 fd = state->args[0];
+		__u64 iovcnt = state->args[2];
+		__u64 offset = state->args[3];
+		bpf_snprintf(args_str, 256, "fd=%lld iovcnt=%llu offset=%llu", fd, iovcnt, offset);
+		break;
+	}
+	/* pwritev(fd, iov, iovcnt, offset) */
+	case IO_PWRITEV: {
+		__u64 fd = state->args[0];
+		__u64 iovcnt = state->args[2];
+		__u64 offset = state->args[3];
+		bpf_snprintf(args_str, 256, "fd=%lld iovcnt=%llu offset=%llu", fd, iovcnt, offset);
 		break;
 	}
 	default:
@@ -1258,6 +1310,202 @@ int trace_readlinkat_exit(struct trace_event_raw_sys_exit *ctx)
 		char args_str[256];
 		format_args(IO_READLINKAT, state, args_str);
 		emit_event(IO_READLINKAT, ret, state->fname, args_str);
+		bpf_map_delete_elem(&enter_ctx, &id);
+	}
+	
+	return 0;
+}
+
+SEC("tp/syscalls/sys_enter_pread64")
+int trace_pread64_enter(struct trace_event_raw_sys_enter *ctx)
+{
+	__u64 id = bpf_get_current_pid_uid();
+	struct enter_state state = {};
+
+	state.type = IO_PREAD64;
+	state.args[0] = ctx->args[0];
+	state.args[2] = ctx->args[2];
+	state.args[3] = ctx->args[3];
+	bpf_probe_read_kernel_str(&state.fname, sizeof(state.fname), (void *)"pread64");
+
+	bpf_map_update_elem(&enter_ctx, &id, &state, 0);
+	return 0;
+}
+
+SEC("tp/syscalls/sys_exit_pread64")
+int trace_pread64_exit(struct trace_event_raw_sys_exit *ctx)
+{
+	__u64 id = bpf_get_current_pid_uid();
+	long ret = ctx->ret;
+	
+	struct enter_state *state = bpf_map_lookup_elem(&enter_ctx, &id);
+	if (state) {
+		char args_str[256];
+		format_args(IO_PREAD64, state, args_str);
+		emit_event(IO_PREAD64, ret, state->fname, args_str);
+		bpf_map_delete_elem(&enter_ctx, &id);
+	}
+	
+	return 0;
+}
+
+SEC("tp/syscalls/sys_enter_pwrite64")
+int trace_pwrite64_enter(struct trace_event_raw_sys_enter *ctx)
+{
+	__u64 id = bpf_get_current_pid_uid();
+	struct enter_state state = {};
+
+	state.type = IO_PWRITE64;
+	state.args[0] = ctx->args[0];
+	state.args[2] = ctx->args[2];
+	state.args[3] = ctx->args[3];
+	bpf_probe_read_kernel_str(&state.fname, sizeof(state.fname), (void *)"pwrite64");
+
+	bpf_map_update_elem(&enter_ctx, &id, &state, 0);
+	return 0;
+}
+
+SEC("tp/syscalls/sys_exit_pwrite64")
+int trace_pwrite64_exit(struct trace_event_raw_sys_exit *ctx)
+{
+	__u64 id = bpf_get_current_pid_uid();
+	long ret = ctx->ret;
+	
+	struct enter_state *state = bpf_map_lookup_elem(&enter_ctx, &id);
+	if (state) {
+		char args_str[256];
+		format_args(IO_PWRITE64, state, args_str);
+		emit_event(IO_PWRITE64, ret, state->fname, args_str);
+		bpf_map_delete_elem(&enter_ctx, &id);
+	}
+	
+	return 0;
+}
+
+SEC("tp/syscalls/sys_enter_readv")
+int trace_readv_enter(struct trace_event_raw_sys_enter *ctx)
+{
+	__u64 id = bpf_get_current_pid_uid();
+	struct enter_state state = {};
+
+	state.type = IO_READV;
+	state.args[0] = ctx->args[0];
+	state.args[2] = ctx->args[2];
+	bpf_probe_read_kernel_str(&state.fname, sizeof(state.fname), (void *)"readv");
+
+	bpf_map_update_elem(&enter_ctx, &id, &state, 0);
+	return 0;
+}
+
+SEC("tp/syscalls/sys_exit_readv")
+int trace_readv_exit(struct trace_event_raw_sys_exit *ctx)
+{
+	__u64 id = bpf_get_current_pid_uid();
+	long ret = ctx->ret;
+	
+	struct enter_state *state = bpf_map_lookup_elem(&enter_ctx, &id);
+	if (state) {
+		char args_str[256];
+		format_args(IO_READV, state, args_str);
+		emit_event(IO_READV, ret, state->fname, args_str);
+		bpf_map_delete_elem(&enter_ctx, &id);
+	}
+	
+	return 0;
+}
+
+SEC("tp/syscalls/sys_enter_writev")
+int trace_writev_enter(struct trace_event_raw_sys_enter *ctx)
+{
+	__u64 id = bpf_get_current_pid_uid();
+	struct enter_state state = {};
+
+	state.type = IO_WRITEV;
+	state.args[0] = ctx->args[0];
+	state.args[2] = ctx->args[2];
+	bpf_probe_read_kernel_str(&state.fname, sizeof(state.fname), (void *)"writev");
+
+	bpf_map_update_elem(&enter_ctx, &id, &state, 0);
+	return 0;
+}
+
+SEC("tp/syscalls/sys_exit_writev")
+int trace_writev_exit(struct trace_event_raw_sys_exit *ctx)
+{
+	__u64 id = bpf_get_current_pid_uid();
+	long ret = ctx->ret;
+	
+	struct enter_state *state = bpf_map_lookup_elem(&enter_ctx, &id);
+	if (state) {
+		char args_str[256];
+		format_args(IO_WRITEV, state, args_str);
+		emit_event(IO_WRITEV, ret, state->fname, args_str);
+		bpf_map_delete_elem(&enter_ctx, &id);
+	}
+	
+	return 0;
+}
+
+SEC("tp/syscalls/sys_enter_preadv")
+int trace_preadv_enter(struct trace_event_raw_sys_enter *ctx)
+{
+	__u64 id = bpf_get_current_pid_uid();
+	struct enter_state state = {};
+
+	state.type = IO_PREADV;
+	state.args[0] = ctx->args[0];
+	state.args[2] = ctx->args[2];
+	state.args[3] = ctx->args[3];
+	bpf_probe_read_kernel_str(&state.fname, sizeof(state.fname), (void *)"preadv");
+
+	bpf_map_update_elem(&enter_ctx, &id, &state, 0);
+	return 0;
+}
+
+SEC("tp/syscalls/sys_exit_preadv")
+int trace_preadv_exit(struct trace_event_raw_sys_exit *ctx)
+{
+	__u64 id = bpf_get_current_pid_uid();
+	long ret = ctx->ret;
+	
+	struct enter_state *state = bpf_map_lookup_elem(&enter_ctx, &id);
+	if (state) {
+		char args_str[256];
+		format_args(IO_PREADV, state, args_str);
+		emit_event(IO_PREADV, ret, state->fname, args_str);
+		bpf_map_delete_elem(&enter_ctx, &id);
+	}
+	
+	return 0;
+}
+
+SEC("tp/syscalls/sys_enter_pwritev")
+int trace_pwritev_enter(struct trace_event_raw_sys_enter *ctx)
+{
+	__u64 id = bpf_get_current_pid_uid();
+	struct enter_state state = {};
+
+	state.type = IO_PWRITEV;
+	state.args[0] = ctx->args[0];
+	state.args[2] = ctx->args[2];
+	state.args[3] = ctx->args[3];
+	bpf_probe_read_kernel_str(&state.fname, sizeof(state.fname), (void *)"pwritev");
+
+	bpf_map_update_elem(&enter_ctx, &id, &state, 0);
+	return 0;
+}
+
+SEC("tp/syscalls/sys_exit_pwritev")
+int trace_pwritev_exit(struct trace_event_raw_sys_exit *ctx)
+{
+	__u64 id = bpf_get_current_pid_uid();
+	long ret = ctx->ret;
+	
+	struct enter_state *state = bpf_map_lookup_elem(&enter_ctx, &id);
+	if (state) {
+		char args_str[256];
+		format_args(IO_PWRITEV, state, args_str);
+		emit_event(IO_PWRITEV, ret, state->fname, args_str);
 		bpf_map_delete_elem(&enter_ctx, &id);
 	}
 	

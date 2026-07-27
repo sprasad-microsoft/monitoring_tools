@@ -40,6 +40,12 @@
 #define SC_SYMLINKAT	28
 #define SC_READLINK	29
 #define SC_READLINKAT	30
+#define SC_PREAD64	31
+#define SC_PWRITE64	32
+#define SC_READV	33
+#define SC_WRITEV	34
+#define SC_PREADV	35
+#define SC_PWRITEV	36
 
 struct ioslower_event {
 	__u64 ts;
@@ -183,6 +189,18 @@ const char *syscall_name(int type)
 		return "readlink";
 	case SC_READLINKAT:
 		return "readlinkat";
+	case SC_PREAD64:
+		return "pread64";
+	case SC_PWRITE64:
+		return "pwrite64";
+	case SC_READV:
+		return "readv";
+	case SC_WRITEV:
+		return "writev";
+	case SC_PREADV:
+		return "preadv";
+	case SC_PWRITEV:
+		return "pwritev";
 	default:
 		return "UNKNOWN";
 	}

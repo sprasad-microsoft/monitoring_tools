@@ -40,6 +40,12 @@
 #define IO_SYMLINKAT	27
 #define IO_READLINK	28
 #define IO_READLINKAT	29
+#define IO_PREAD64	30
+#define IO_PWRITE64	31
+#define IO_READV	32
+#define IO_WRITEV	33
+#define IO_PREADV	34
+#define IO_PWRITEV	35
 
 struct io_event {
 	__u64 ts;
@@ -181,6 +187,18 @@ const char *io_type_str(int type)
 		return "READLINK";
 	case IO_READLINKAT:
 		return "READLINKAT";
+	case IO_PREAD64:
+		return "PREAD64";
+	case IO_PWRITE64:
+		return "PWRITE64";
+	case IO_READV:
+		return "READV";
+	case IO_WRITEV:
+		return "WRITEV";
+	case IO_PREADV:
+		return "PREADV";
+	case IO_PWRITEV:
+		return "PWRITEV";
 	default:
 		return "UNKNOWN";
 	}
