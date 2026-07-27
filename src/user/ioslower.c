@@ -54,8 +54,10 @@
 #define SC_SUBMIT	41
 #define SC_GETEVENTS	42
 #define SC_CANCEL	43
-#define SC_DESTROY	44
-
+#define SC_DESTROY	44/* Memory mapping syscalls */
+#define SC_MMAP\t45
+#define SC_MMAP2\t46
+#define SC_MUNMAP\t47
 struct ioslower_event {
 	__u64 ts;
 	__u32 pid;
@@ -226,6 +228,12 @@ const char *syscall_name(int type)
 		return "io_cancel";
 	case SC_DESTROY:
 		return "io_destroy";
+	case SC_MMAP:
+		return "mmap";
+	case SC_MMAP2:
+		return "mmap2";
+	case SC_MUNMAP:
+		return "munmap";
 	default:
 		return "UNKNOWN";
 	}

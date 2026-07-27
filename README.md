@@ -191,6 +191,22 @@ TIME     | PID     | COMM     | TYPE          | RET     | ARGS
 14:32:15 | 12346   | app      | IO_SUBMIT     | 5       | ctx_id=139876543210 nr=5
 ```
 
+#### Memory Mapping Syscalls
+
+iosnoop also traces memory-mapped file operations:
+
+- **Memory mapping syscalls**:
+  - `mmap`: `length=NNN prot=0xNNNN flags=0xNNNN fd=NNN` (memory map file)
+  - `mmap2`: `length=NNN prot=0xNNNN flags=0xNNNN fd=NNN` (mmap with page offset)
+  - `munmap`: `length=NNN` (unmap memory region)
+
+Example memory mapping output:
+```
+TIME     | PID     | COMM     | TYPE          | RET     | ARGS
+14:32:15 | 12345   | app      | MMAP          | 0x7f... | length=4096 prot=0x3 flags=0x1 fd=3
+14:32:15 | 12345   | app      | MUNMAP        | 0       | length=4096
+```
+
 ### ioslower
 
 ```bash

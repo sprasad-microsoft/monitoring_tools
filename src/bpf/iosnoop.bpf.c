@@ -49,6 +49,10 @@
 #define IO_GETEVENTS	41
 #define IO_CANCEL	42
 #define IO_DESTROY	43
+/* Memory mapping syscalls */
+#define IO_MMAP	44
+#define IO_MMAP2	45
+#define IO_MUNMAP	46
 
 struct io_event {
 	__u64 ts;
@@ -377,6 +381,30 @@ static __always_inline void format_args(__u8 type, struct enter_state *state, ch
 	case IO_DESTROY: {
 		__u64 ctx_id = state->args[0];
 		bpf_snprintf(args_str, 256, "ctx_id=%llu", ctx_id);
+		break;
+	}
+	/* mmap(addr, length, prot, flags, fd, offset) */
+	case IO_MMAP: {
+		__u64 length = state->args[1];
+		__u64 prot = state->args[2];
+		__u64 flags = state->args[3];
+		__u64 fd = state->args[4];
+		bpf_snprintf(args_str, 256, "length=%llu prot=0x%llx flags=0x%llx fd=%llu", length, prot, flags, fd);
+		break;
+	}
+	/* mmap2(addr, length, prot, flags, fd, pgoffset) - similar to mmap but different arg order */
+	case IO_MMAP2: {
+		__u64 length = state->args[1];
+		__u64 prot = state->args[2];
+		__u64 flags = state->args[3];
+		__u64 fd = state->args[4];
+		bpf_snprintf(args_str, 256, "length=%llu prot=0x%llx flags=0x%llx fd=%llu", length, prot, flags, fd);
+		break;
+	}
+	/* munmap(addr, length) */
+	case IO_MUNMAP: {
+		__u64 length = state->args[1];
+		bpf_snprintf(args_str, 256, "length=%llu", length);
 		break;
 	}
 	default:
@@ -1841,4 +1869,105 @@ int trace_io_destroy_exit(struct trace_event_raw_sys_exit *ctx)
 	return 0;
 }
 
-char LICENSE[] SEC("license") = "GPL";
+/* mmap */
+SEC("tp/syscalls/sys_enter_mmap")
+int trace_mmap_enter(struct trace_event_raw_sys_enter *ctx)
+{
+        __u64 id = bpf_get_current_pid_uid();
+        struct enter_state state = {};
+
+        state.type = IO_MMAP;
+        state.args[1] = ctx->args[1];  /* length */
+        state.args[2] = ctx->args[2];  /* prot */
+        state.args[3] = ctx->args[3];  /* flags */
+        state.args[4] = ctx->args[4];  /* fd */
+        bpf_probe_read_kernel_str(&state.fname, sizeof(state.fname), (void *)"mmap");
+
+        bpf_map_update_elem(&enter_ctx, &id, &state, 0);
+        return 0;
+}
+
+SEC("tp/syscalls/sys_exit_mmap")
+int trace_mmap_exit(struct trace_event_raw_sys_exit *ctx)
+{
+        __u64 id = bpf_get_current_pid_uid();
+        long ret = ctx->ret;
+
+        struct enter_state *state = bpf_map_lookup_elem(&enter_ctx, &id);
+        if (state) {
+                char args_str[256];
+                format_args(IO_MMAP, state, args_str);
+                emit_event(IO_MMAP, ret, state->fname, args_str);
+                bpf_map_delete_elem(&enter_ctx, &id);
+        }
+
+        return 0;
+}
+
+/* mmap2 */
+SEC("tp/syscalls/sys_enter_mmap2")
+int trace_mmap2_enter(struct trace_event_raw_sys_enter *ctx)
+{
+        __u64 id = bpf_get_current_pid_uid();
+        struct enter_state state = {};
+
+        state.type = IO_MMAP2;
+        state.args[1] = ctx->args[1];  /* length */
+        state.args[2] = ctx->args[2];  /* prot */
+        state.args[3] = ctx->args[3];  /* flags */
+        state.args[4] = ctx->args[4];  /* fd */
+        bpf_probe_read_kernel_str(&state.fname, sizeof(state.fname), (void *)"mmap2");
+
+        bpf_map_update_elem(&enter_ctx, &id, &state, 0);
+        return 0;
+}
+
+SEC("tp/syscalls/sys_exit_mmap2")
+int trace_mmap2_exit(struct trace_event_raw_sys_exit *ctx)
+{
+        __u64 id = bpf_get_current_pid_uid();
+        long ret = ctx->ret;
+
+        struct enter_state *state = bpf_map_lookup_elem(&enter_ctx, &id);
+        if (state) {
+                char args_str[256];
+                format_args(IO_MMAP2, state, args_str);
+                emit_event(IO_MMAP2, ret, state->fname, args_str);
+                bpf_map_delete_elem(&enter_ctx, &id);
+        }
+
+        return 0;
+}
+
+/* munmap */
+SEC("tp/syscalls/sys_enter_munmap")
+int trace_munmap_enter(struct trace_event_raw_sys_enter *ctx)
+{
+        __u64 id = bpf_get_current_pid_uid();
+        struct enter_state state = {};
+
+        state.type = IO_MUNMAP;
+        state.args[1] = ctx->args[1];  /* length */
+        bpf_probe_read_kernel_str(&state.fname, sizeof(state.fname), (void *)"munmap");
+
+        bpf_map_update_elem(&enter_ctx, &id, &state, 0);
+        return 0;
+}
+
+SEC("tp/syscalls/sys_exit_munmap")
+int trace_munmap_exit(struct trace_event_raw_sys_exit *ctx)
+{
+        __u64 id = bpf_get_current_pid_uid();
+        long ret = ctx->ret;
+
+        struct enter_state *state = bpf_map_lookup_elem(&enter_ctx, &id);
+        if (state) {
+                char args_str[256];
+                format_args(IO_MUNMAP, state, args_str);
+                emit_event(IO_MUNMAP, ret, state->fname, args_str);
+                bpf_map_delete_elem(&enter_ctx, &id);
+        }
+
+        return 0;
+}
+
