@@ -35,6 +35,12 @@
 #define SC_SYMLINKAT	28
 #define SC_READLINK	29
 #define SC_READLINKAT	30
+#define SC_PREAD64	31
+#define SC_PWRITE64	32
+#define SC_READV	33
+#define SC_WRITEV	34
+#define SC_PREADV	35
+#define SC_PWRITEV	36
 
 struct ioslower_event {
 	__u64 ts;
@@ -1042,6 +1048,186 @@ int trace_readlinkat_exit(struct trace_event_raw_sys_exit *ctx)
 	if (start) {
 		__u64 delta = bpf_ktime_get_ns() - start->ts;
 		emit_event(SC_READLINKAT, delta, ret, start->fname);
+		bpf_map_delete_elem(&syscall_start, &id);
+	}
+	
+	return 0;
+}
+
+SEC("tp/syscalls/sys_enter_pread64")
+int trace_pread64_enter(struct trace_event_raw_sys_enter *ctx)
+{
+	__u64 id = bpf_get_current_pid_uid();
+	struct start_t start = {};
+
+	start.ts = bpf_ktime_get_ns();
+	start.type = SC_PREAD64;
+	start.fname[0] = '\0';
+
+	bpf_map_update_elem(&syscall_start, &id, &start, 0);
+	return 0;
+}
+
+SEC("tp/syscalls/sys_exit_pread64")
+int trace_pread64_exit(struct trace_event_raw_sys_exit *ctx)
+{
+	__u64 id = bpf_get_current_pid_uid();
+	long ret = ctx->ret;
+	
+	struct start_t *start = bpf_map_lookup_elem(&syscall_start, &id);
+	if (start) {
+		__u64 delta = bpf_ktime_get_ns() - start->ts;
+		emit_event(SC_PREAD64, delta, ret, "pread64");
+		bpf_map_delete_elem(&syscall_start, &id);
+	}
+	
+	return 0;
+}
+
+SEC("tp/syscalls/sys_enter_pwrite64")
+int trace_pwrite64_enter(struct trace_event_raw_sys_enter *ctx)
+{
+	__u64 id = bpf_get_current_pid_uid();
+	struct start_t start = {};
+
+	start.ts = bpf_ktime_get_ns();
+	start.type = SC_PWRITE64;
+	start.fname[0] = '\0';
+
+	bpf_map_update_elem(&syscall_start, &id, &start, 0);
+	return 0;
+}
+
+SEC("tp/syscalls/sys_exit_pwrite64")
+int trace_pwrite64_exit(struct trace_event_raw_sys_exit *ctx)
+{
+	__u64 id = bpf_get_current_pid_uid();
+	long ret = ctx->ret;
+	
+	struct start_t *start = bpf_map_lookup_elem(&syscall_start, &id);
+	if (start) {
+		__u64 delta = bpf_ktime_get_ns() - start->ts;
+		emit_event(SC_PWRITE64, delta, ret, "pwrite64");
+		bpf_map_delete_elem(&syscall_start, &id);
+	}
+	
+	return 0;
+}
+
+SEC("tp/syscalls/sys_enter_readv")
+int trace_readv_enter(struct trace_event_raw_sys_enter *ctx)
+{
+	__u64 id = bpf_get_current_pid_uid();
+	struct start_t start = {};
+
+	start.ts = bpf_ktime_get_ns();
+	start.type = SC_READV;
+	start.fname[0] = '\0';
+
+	bpf_map_update_elem(&syscall_start, &id, &start, 0);
+	return 0;
+}
+
+SEC("tp/syscalls/sys_exit_readv")
+int trace_readv_exit(struct trace_event_raw_sys_exit *ctx)
+{
+	__u64 id = bpf_get_current_pid_uid();
+	long ret = ctx->ret;
+	
+	struct start_t *start = bpf_map_lookup_elem(&syscall_start, &id);
+	if (start) {
+		__u64 delta = bpf_ktime_get_ns() - start->ts;
+		emit_event(SC_READV, delta, ret, "readv");
+		bpf_map_delete_elem(&syscall_start, &id);
+	}
+	
+	return 0;
+}
+
+SEC("tp/syscalls/sys_enter_writev")
+int trace_writev_enter(struct trace_event_raw_sys_enter *ctx)
+{
+	__u64 id = bpf_get_current_pid_uid();
+	struct start_t start = {};
+
+	start.ts = bpf_ktime_get_ns();
+	start.type = SC_WRITEV;
+	start.fname[0] = '\0';
+
+	bpf_map_update_elem(&syscall_start, &id, &start, 0);
+	return 0;
+}
+
+SEC("tp/syscalls/sys_exit_writev")
+int trace_writev_exit(struct trace_event_raw_sys_exit *ctx)
+{
+	__u64 id = bpf_get_current_pid_uid();
+	long ret = ctx->ret;
+	
+	struct start_t *start = bpf_map_lookup_elem(&syscall_start, &id);
+	if (start) {
+		__u64 delta = bpf_ktime_get_ns() - start->ts;
+		emit_event(SC_WRITEV, delta, ret, "writev");
+		bpf_map_delete_elem(&syscall_start, &id);
+	}
+	
+	return 0;
+}
+
+SEC("tp/syscalls/sys_enter_preadv")
+int trace_preadv_enter(struct trace_event_raw_sys_enter *ctx)
+{
+	__u64 id = bpf_get_current_pid_uid();
+	struct start_t start = {};
+
+	start.ts = bpf_ktime_get_ns();
+	start.type = SC_PREADV;
+	start.fname[0] = '\0';
+
+	bpf_map_update_elem(&syscall_start, &id, &start, 0);
+	return 0;
+}
+
+SEC("tp/syscalls/sys_exit_preadv")
+int trace_preadv_exit(struct trace_event_raw_sys_exit *ctx)
+{
+	__u64 id = bpf_get_current_pid_uid();
+	long ret = ctx->ret;
+	
+	struct start_t *start = bpf_map_lookup_elem(&syscall_start, &id);
+	if (start) {
+		__u64 delta = bpf_ktime_get_ns() - start->ts;
+		emit_event(SC_PREADV, delta, ret, "preadv");
+		bpf_map_delete_elem(&syscall_start, &id);
+	}
+	
+	return 0;
+}
+
+SEC("tp/syscalls/sys_enter_pwritev")
+int trace_pwritev_enter(struct trace_event_raw_sys_enter *ctx)
+{
+	__u64 id = bpf_get_current_pid_uid();
+	struct start_t start = {};
+
+	start.ts = bpf_ktime_get_ns();
+	start.type = SC_PWRITEV;
+	start.fname[0] = '\0';
+
+	bpf_map_update_elem(&syscall_start, &id, &start, 0);
+	return 0;
+}
+
+SEC("tp/syscalls/sys_exit_pwritev")
+int trace_pwritev_exit(struct trace_event_raw_sys_exit *ctx)
+{
+	__u64 id = bpf_get_current_pid_uid();
+	long ret = ctx->ret;
+	
+	struct start_t *start = bpf_map_lookup_elem(&syscall_start, &id);
+	if (start) {
+		__u64 delta = bpf_ktime_get_ns() - start->ts;
+		emit_event(SC_PWRITEV, delta, ret, "pwritev");
 		bpf_map_delete_elem(&syscall_start, &id);
 	}
 	
