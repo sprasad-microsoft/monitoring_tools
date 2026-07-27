@@ -50,6 +50,10 @@
 #define SC_GETEVENTS	42
 #define SC_CANCEL	43
 #define SC_DESTROY	44
+/* Memory mapping syscalls */
+#define SC_MMAP	45
+#define SC_MMAP2	46
+#define SC_MUNMAP	47
 
 struct ioslower_event {
 	__u64 ts;
@@ -1485,6 +1489,99 @@ int trace_io_destroy_exit(struct trace_event_raw_sys_exit *ctx)
 	if (start) {
 		__u64 delta = bpf_ktime_get_ns() - start->ts;
 		emit_event(SC_DESTROY, delta, ret, "io_destroy");
+		bpf_map_delete_elem(&syscall_start, &id);
+	}
+
+	return 0;
+}
+
+/* mmap */
+SEC("tp/syscalls/sys_enter_mmap")
+int trace_mmap_enter(struct trace_event_raw_sys_enter *ctx)
+{
+	__u64 id = bpf_get_current_pid_uid();
+	struct start_t start = {};
+
+	start.ts = bpf_ktime_get_ns();
+	start.type = SC_MMAP;
+	start.fname[0] = '\0';
+
+	bpf_map_update_elem(&syscall_start, &id, &start, 0);
+	return 0;
+}
+
+SEC("tp/syscalls/sys_exit_mmap")
+int trace_mmap_exit(struct trace_event_raw_sys_exit *ctx)
+{
+	__u64 id = bpf_get_current_pid_uid();
+	long ret = ctx->ret;
+
+	struct start_t *start = bpf_map_lookup_elem(&syscall_start, &id);
+	if (start) {
+		__u64 delta = bpf_ktime_get_ns() - start->ts;
+		emit_event(SC_MMAP, delta, ret, "mmap");
+		bpf_map_delete_elem(&syscall_start, &id);
+	}
+
+	return 0;
+}
+
+/* mmap2 */
+SEC("tp/syscalls/sys_enter_mmap2")
+int trace_mmap2_enter(struct trace_event_raw_sys_enter *ctx)
+{
+	__u64 id = bpf_get_current_pid_uid();
+	struct start_t start = {};
+
+	start.ts = bpf_ktime_get_ns();
+	start.type = SC_MMAP2;
+	start.fname[0] = '\0';
+
+	bpf_map_update_elem(&syscall_start, &id, &start, 0);
+	return 0;
+}
+
+SEC("tp/syscalls/sys_exit_mmap2")
+int trace_mmap2_exit(struct trace_event_raw_sys_exit *ctx)
+{
+	__u64 id = bpf_get_current_pid_uid();
+	long ret = ctx->ret;
+
+	struct start_t *start = bpf_map_lookup_elem(&syscall_start, &id);
+	if (start) {
+		__u64 delta = bpf_ktime_get_ns() - start->ts;
+		emit_event(SC_MMAP2, delta, ret, "mmap2");
+		bpf_map_delete_elem(&syscall_start, &id);
+	}
+
+	return 0;
+}
+
+/* munmap */
+SEC("tp/syscalls/sys_enter_munmap")
+int trace_munmap_enter(struct trace_event_raw_sys_enter *ctx)
+{
+	__u64 id = bpf_get_current_pid_uid();
+	struct start_t start = {};
+
+	start.ts = bpf_ktime_get_ns();
+	start.type = SC_MUNMAP;
+	start.fname[0] = '\0';
+
+	bpf_map_update_elem(&syscall_start, &id, &start, 0);
+	return 0;
+}
+
+SEC("tp/syscalls/sys_exit_munmap")
+int trace_munmap_exit(struct trace_event_raw_sys_exit *ctx)
+{
+	__u64 id = bpf_get_current_pid_uid();
+	long ret = ctx->ret;
+
+	struct start_t *start = bpf_map_lookup_elem(&syscall_start, &id);
+	if (start) {
+		__u64 delta = bpf_ktime_get_ns() - start->ts;
+		emit_event(SC_MUNMAP, delta, ret, "munmap");
 		bpf_map_delete_elem(&syscall_start, &id);
 	}
 

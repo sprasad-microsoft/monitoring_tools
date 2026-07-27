@@ -55,6 +55,10 @@
 #define IO_GETEVENTS	41
 #define IO_CANCEL	42
 #define IO_DESTROY	43
+/* Memory mapping syscalls */
+#define IO_MMAP	44
+#define IO_MMAP2	45
+#define IO_MUNMAP	46
 
 struct io_event {
 	__u64 ts;
@@ -224,6 +228,12 @@ const char *io_type_str(int type)
 		return "IO_CANCEL";
 	case IO_DESTROY:
 		return "IO_DESTROY";
+	case IO_MMAP:
+		return "MMAP";
+	case IO_MMAP2:
+		return "MMAP2";
+	case IO_MUNMAP:
+		return "MUNMAP";
 	default:
 		return "UNKNOWN";
 	}
