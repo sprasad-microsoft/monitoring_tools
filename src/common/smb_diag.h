@@ -8,6 +8,8 @@
 #define MAX_SMB_COMMANDS	20
 
 #define SMBSLOWER	 		0
+#define MAX_SMB_STATUS_CODES	256
+#define SMBIOSNOOP			1
 
 struct smb_partial_event {
 	__u16 smbcommand;

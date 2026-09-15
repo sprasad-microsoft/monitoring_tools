@@ -145,11 +145,16 @@ def _handle_event(_ctx, data, size):
     e = ctypes.cast(data, ctypes.POINTER(Event)).contents
     task = e.task.split(b"\x00", 1)[0].decode(errors="replace")
     cmd_name = e.command
-    lat_ms = e.metric.latency_ns / 1_000_000
-    print(
-        f"pid={e.pid:<7} task={task:<16} rqst_id={e.rqst_id:<12} "
-        f"cmd={cmd_name:<30} latency={lat_ms:.2f}ms"
-    )
+    prefix = (f"pid={e.pid:<7} task={task:<16} rqst_id={e.rqst_id:<12} "
+              f"cmd={cmd_name:<30}")
+    if e.tool == b"\x01":
+        status = ctypes.c_uint32(e.metric.retval).value
+        print(f"{prefix} ntstatus=0x{status:08x}")
+    elif e.tool == b"\x0b":
+        print(f"{prefix} error={e.metric.retval}")
+    else:
+        lat_ms = e.metric.latency_ns / 1_000_000
+        print(f"{prefix} latency={lat_ms:.2f}ms")
     return 0
 
 

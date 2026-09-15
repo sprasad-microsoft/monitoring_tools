@@ -72,14 +72,25 @@ static void tmppath(char *out, size_t len, const char *name)
 static int make_file(const char *path, size_t size)
 {
 	int fd = open(path, O_CREAT | O_WRONLY | O_TRUNC, 0644);
+	char buf[256];
+	size_t written = 0;
+	size_t chunk;
+
 	if (fd < 0)
 		return -1;
-	for (size_t i = 0; i < size; i++) {
-		char c = 'A' + (i % 26);
-		if (write(fd, &c, 1) != 1) {
+
+	for (size_t i = 0; i < sizeof(buf); i++)
+		buf[i] = 'A' + (i % 26);
+
+	while (written < size) {
+		chunk = size - written;
+		if (chunk > sizeof(buf))
+			chunk = sizeof(buf);
+		if (write(fd, buf, chunk) != (ssize_t)chunk) {
 			close(fd);
 			return -1;
 		}
+		written += chunk;
 	}
 	close(fd);
 	return 0;
@@ -578,7 +589,81 @@ static void test_vector_io(void)
 }
 
 /* =========================================================================
- * 8. Memory mapping
+ * 8. Additional VFS operations
+ * ====================================================================== */
+
+static void test_additional_vfs_operations(void)
+{
+	section("Additional VFS operations");
+
+	char path[256];
+	int fd;
+
+	/* vfs_create (open with O_CREAT on a new path) */
+	tmppath(path, sizeof(path), "create_test.bin");
+	fd = open(path, O_CREAT | O_EXCL | O_RDWR, 0644);
+	if (fd < 0) {
+		FAIL("create (O_CREAT|O_EXCL)", "errno=%d", errno);
+	} else {
+		PASS("create (O_CREAT|O_EXCL)");
+		close(fd);
+	}
+
+	/* vfs_fallocate */
+	tmppath(path, sizeof(path), "fallocate_test.bin");
+	fd = open(path, O_CREAT | O_RDWR, 0644);
+	if (fd < 0) {
+		FAIL("fallocate()", "open failed errno=%d", errno);
+	} else {
+		long rc = syscall(__NR_fallocate, fd, 0, 0, 4096);
+
+		if (rc < 0 && (errno == EOPNOTSUPP || errno == ENOSYS))
+			SKIP("fallocate()", "filesystem/kernel does not support fallocate");
+		else if (rc < 0)
+			FAIL("fallocate()", "errno=%d (%s)", errno, strerror(errno));
+		else
+			PASS("fallocate()");
+		close(fd);
+	}
+
+	/* iterate_dir/getdents64 */
+	fd = open(g_tmpdir, O_RDONLY | O_DIRECTORY);
+	if (fd < 0) {
+		FAIL("getdents64()", "open failed errno=%d", errno);
+	} else {
+		char buf[4096];
+		long rc = syscall(__NR_getdents64, fd, buf, sizeof(buf));
+
+		if (rc < 0)
+			FAIL("getdents64()", "errno=%d (%s)", errno, strerror(errno));
+		else
+			PASS("getdents64()");
+		close(fd);
+	}
+
+	/* vfs_lock_file via POSIX record locking */
+	tmppath(path, sizeof(path), "lock_test.bin");
+	fd = open(path, O_CREAT | O_RDWR, 0644);
+	if (fd < 0) {
+		FAIL("fcntl(F_SETLK)", "open failed errno=%d", errno);
+	} else {
+		struct flock lock = {
+			.l_type = F_WRLCK,
+			.l_whence = SEEK_SET,
+			.l_start = 0,
+			.l_len = 0,
+		};
+
+		if (fcntl(fd, F_SETLK, &lock) < 0)
+			FAIL("fcntl(F_SETLK)", "errno=%d (%s)", errno, strerror(errno));
+		else
+			PASS("fcntl(F_SETLK)");
+		close(fd);
+	}
+}
+
+/* =========================================================================
+ * 9. Memory mapping
  * ====================================================================== */
 
 static void test_memory_mapping(void)
@@ -833,14 +918,21 @@ static void test_mount_operations(void)
 int main(int argc, char *argv[])
 {
 	int test_mount = 0;
+	const char *target_dir = "/tmp";
 
 	for (int i = 1; i < argc; i++) {
 		if (strcmp(argv[i], "--mount") == 0)
 			test_mount = 1;
+		else if (strcmp(argv[i], "--target-dir") == 0 && i + 1 < argc)
+			target_dir = argv[++i];
 	}
 
 	/* Create a private temporary directory */
-	snprintf(g_tmpdir, sizeof(g_tmpdir), "/tmp/test_syscalls_XXXXXX");
+	if (snprintf(g_tmpdir, sizeof(g_tmpdir), "%s/test_syscalls_XXXXXX", target_dir)
+	    >= (int)sizeof(g_tmpdir)) {
+		fprintf(stderr, "target directory path too long\n");
+		return 1;
+	}
 	if (!mkdtemp(g_tmpdir)) {
 		fprintf(stderr, "mkdtemp failed: %s\n", strerror(errno));
 		return 1;
@@ -861,6 +953,7 @@ int main(int argc, char *argv[])
 	test_file_renaming();
 	test_link_operations();
 	test_vector_io();
+	test_additional_vfs_operations();
 	test_memory_mapping();
 	test_linux_aio();
 	test_io_uring();
