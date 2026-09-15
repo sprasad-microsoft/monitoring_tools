@@ -162,12 +162,20 @@ def main():
             for i in range(count):
                 e = buf[i]
                 task = e["task"].split(b"\x00", 1)[0].decode(errors="replace")
-                lat_ms = e["metric_latency_ns"] / 1_000_000
-                print(
+                prefix = (
                     f"pid={e['pid']:<7} task={task:<16} "
                     f"rqst_id={e['rqst_id']:<12} "
-                    f"cmd={e['command']:<30} latency={lat_ms:.2f}ms"
+                    f"cmd={e['command']:<30}"
                 )
+                if e["tool"] == b"\x01":
+                    status = int(e["metric_latency_ns"]) & 0xffffffff
+                    print(f"{prefix} ntstatus=0x{status:08x}")
+                elif e["tool"] == b"\x0b":
+                    error = int(e["metric_latency_ns"]) & 0xffffffff
+                    print(f"{prefix} error={error}")
+                else:
+                    lat_ms = e["metric_latency_ns"] / 1_000_000
+                    print(f"{prefix} latency={lat_ms:.2f}ms")
     finally:
         _shim.rb_close(ctx)
 

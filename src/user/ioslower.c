@@ -4,7 +4,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <limits.h>
 #include <unistd.h>
+#include <sys/stat.h>
+#include <sys/sysmacros.h>
 #include <bpf/libbpf.h>
 #include <bpf/bpf.h>
 #include "ioslower.skel.h"
@@ -59,6 +62,11 @@
 #define SC_MMAP		45
 #define SC_MMAP2		46
 #define SC_MUNMAP	47
+#define SC_CREATE	48
+#define SC_FALLOCATE	49
+#define SC_GETDENTS	50
+#define SC_LOCK_FCNTL	51
+#define SC_LOCK_FLOCK	52
 struct ioslower_event {
 	__u64 ts;
 	__u32 pid;
@@ -74,16 +82,27 @@ struct ioslower_event {
 	char fname[256];
 };
 
+struct mount_filter_cfg {
+	__u32 enabled;
+	__u32 dev_major;
+	__u32 dev_minor;
+};
+
 static volatile sig_atomic_t exiting = 0;
+
+static char mount_path_resolved[PATH_MAX];
+static dev_t mount_dev_id;
 
 struct {
 	bool verbose;
 	int duration;
 	__u64 min_us;
+	char *mount_path;
 } opts = {
 	.verbose = false,
 	.duration = 0,
 	.min_us = 10000,  /* Default 10ms threshold */
+	.mount_path = NULL,
 };
 
 const char *argp_program_version = "ioslower 1.0";
@@ -94,6 +113,7 @@ static const struct argp_option opts_options[] = {
 	{ "verbose", 'v', NULL, 0, "Verbose output" },
 	{ "duration", 'd', "SECS", 0, "Trace for this many seconds" },
 	{ "threshold", 'm', "MS", 0, "Latency threshold in milliseconds (default: 10)" },
+	{ "mount", 'p', "PATH", 0, "Filter by mount path" },
 	{},
 };
 
@@ -110,6 +130,9 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		break;
 	case 'm':
 		opts.min_us = strtol(arg, NULL, 10) * 1000;  /* Convert ms to us */
+		break;
+	case 'p':
+		opts.mount_path = strdup(arg);
 		break;
 	case ARGP_KEY_ARG:
 		argp_usage(state);
@@ -235,6 +258,16 @@ const char *syscall_name(int type)
 		return "mmap2";
 	case SC_MUNMAP:
 		return "munmap";
+	case SC_CREATE:
+		return "create";
+	case SC_FALLOCATE:
+		return "fallocate";
+	case SC_GETDENTS:
+		return "getdents";
+	case SC_LOCK_FCNTL:
+		return "lock_fcntl";
+	case SC_LOCK_FLOCK:
+		return "lock_flock";
 	default:
 		return "UNKNOWN";
 	}
@@ -271,6 +304,7 @@ int main(int argc, char **argv)
 {
 	struct ioslower_bpf *skel;
 	struct ring_buffer *rb = NULL;
+	struct mount_filter_cfg filter_cfg = {};
 	int err;
 	__u32 zero = 0;
 
@@ -293,6 +327,34 @@ int main(int argc, char **argv)
 	if (err) {
 		fprintf(stderr, "Failed to load BPF skeleton: %d\n", err);
 		goto cleanup;
+	}
+
+	if (opts.mount_path) {
+		struct stat st;
+
+		if (!realpath(opts.mount_path, mount_path_resolved)) {
+			perror("realpath");
+			goto cleanup;
+		}
+		if (stat(mount_path_resolved, &st) < 0) {
+			perror("stat");
+			goto cleanup;
+		}
+		mount_dev_id = st.st_dev;
+		printf("Filtering by mount path: %s (dev: %lu)\n",
+			mount_path_resolved, (unsigned long)mount_dev_id);
+
+		filter_cfg.enabled = 1;
+		filter_cfg.dev_major = (__u32)major(mount_dev_id);
+		filter_cfg.dev_minor = (__u32)minor(mount_dev_id);
+		printf("Mount filter device components: major=%u minor=%u\n",
+			filter_cfg.dev_major, filter_cfg.dev_minor);
+		err = bpf_map_update_elem(bpf_map__fd(skel->maps.mount_filter_cfg),
+					  &zero, &filter_cfg, 0);
+		if (err < 0) {
+			fprintf(stderr, "Failed to configure mount filter: %d\n", err);
+			goto cleanup;
+		}
 	}
 
 	err = ioslower_bpf__attach(skel);

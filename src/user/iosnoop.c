@@ -4,61 +4,69 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <limits.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <sys/sysmacros.h>
 #include <bpf/libbpf.h>
 #include <bpf/bpf.h>
 #include "iosnoop.skel.h"
 
 /* Event types */
 #define IO_OPEN		1
-#define IO_READ		2
-#define IO_WRITE	3
-#define IO_CLOSE	4
-#define IO_STAT		5
-#define IO_LSTAT	6
-#define IO_FSTAT	7
-#define IO_MKDIR	8
-#define IO_MKDIRAT	9
-#define IO_RMDIR	10
-#define IO_UNLINK	11
-#define IO_UNLINKAT	12
-#define IO_RENAME	13
-#define IO_RENAMEAT	14
-#define IO_RENAMEAT2	15
-#define IO_MOUNT	16
-#define IO_UMOUNT2	17
-#define IO_CHMOD	18
-#define IO_FCHMOD	19
-#define IO_CHOWN	20
-#define IO_FCHOWN	21
-#define IO_TRUNCATE	22
-#define IO_FTRUNCATE	23
-#define IO_LINK		24
-#define IO_LINKAT	25
-#define IO_SYMLINK	26
-#define IO_SYMLINKAT	27
-#define IO_READLINK	28
-#define IO_READLINKAT	29
-#define IO_PREAD64	30
-#define IO_PWRITE64	31
-#define IO_READV	32
-#define IO_WRITEV	33
-#define IO_PREADV	34
-#define IO_PWRITEV	35
+#define IO_OPENAT	2
+#define IO_READ		3
+#define IO_WRITE	4
+#define IO_CLOSE	5
+#define IO_STAT		6
+#define IO_LSTAT	7
+#define IO_FSTAT	8
+#define IO_MKDIR	9
+#define IO_MKDIRAT	10
+#define IO_RMDIR	11
+#define IO_UNLINK	12
+#define IO_UNLINKAT	13
+#define IO_RENAME	14
+#define IO_RENAMEAT	15
+#define IO_RENAMEAT2	16
+#define IO_MOUNT	17
+#define IO_UMOUNT2	18
+#define IO_CHMOD	19
+#define IO_FCHMOD	20
+#define IO_CHOWN	21
+#define IO_FCHOWN	22
+#define IO_TRUNCATE	23
+#define IO_FTRUNCATE	24
+#define IO_LINK		25
+#define IO_LINKAT	26
+#define IO_SYMLINK	27
+#define IO_SYMLINKAT	28
+#define IO_READLINK	29
+#define IO_READLINKAT	30
+#define IO_PREAD64	31
+#define IO_PWRITE64	32
+#define IO_READV	33
+#define IO_WRITEV	34
+#define IO_PREADV	35
+#define IO_PWRITEV	36
 /* Async I/O syscalls */
-#define IO_URING_ENTER	36
-#define IO_URING_SETUP	37
-#define IO_URING_REGISTER	38
-#define IO_SETUP	39
-#define IO_SUBMIT	40
-#define IO_GETEVENTS	41
-#define IO_CANCEL	42
-#define IO_DESTROY	43
+#define IO_URING_ENTER	37
+#define IO_URING_SETUP	38
+#define IO_URING_REGISTER	39
+#define IO_SETUP	40
+#define IO_SUBMIT	41
+#define IO_GETEVENTS	42
+#define IO_CANCEL	43
+#define IO_DESTROY	44
 /* Memory mapping syscalls */
-#define IO_MMAP	44
-#define IO_MMAP2	45
-#define IO_MUNMAP	46
+#define IO_MMAP	45
+#define IO_MMAP2	46
+#define IO_MUNMAP	47
+#define IO_CREATE	48
+#define IO_FALLOCATE	49
+#define IO_GETDENTS	50
+#define IO_LOCK_FCNTL	51
+#define IO_LOCK_FLOCK	52
 
 struct io_event {
 	__u64 ts;
@@ -75,7 +83,16 @@ struct io_event {
 	char args[256];
 };
 
+struct mount_filter_cfg {
+	__u32 enabled;
+	__u32 dev_major;
+	__u32 dev_minor;
+};
+
 static volatile sig_atomic_t exiting = 0;
+
+static char mount_path_resolved[PATH_MAX];
+static dev_t mount_dev_id;
 
 struct {
 	bool verbose;
@@ -139,11 +156,130 @@ static int libbpf_print_fn(enum libbpf_print_level level, const char *format, va
 	return vfprintf(stderr, format, args);
 }
 
+struct fd_path_entry {
+	__u32 pid;
+	int fd;
+	char path[256];
+	struct fd_path_entry *next;
+};
+
+static struct fd_path_entry *fd_paths;
+
+static bool is_fd_based_type(__u8 type)
+{
+	switch (type) {
+	case IO_READ:
+	case IO_WRITE:
+	case IO_CLOSE:
+	case IO_FSTAT:
+	case IO_FCHMOD:
+	case IO_FCHOWN:
+	case IO_FTRUNCATE:
+	case IO_PREAD64:
+	case IO_PWRITE64:
+	case IO_READV:
+	case IO_WRITEV:
+	case IO_PREADV:
+	case IO_PWRITEV:
+		return true;
+	default:
+		return false;
+	}
+}
+
+static int parse_fd_from_args(const char *args)
+{
+	char *end;
+	long val;
+
+	if (!args)
+		return -1;
+	if (strncmp(args, "fd=", 3) != 0)
+		return -1;
+
+	val = strtol(args + 3, &end, 10);
+	if (end == args + 3)
+		return -1;
+	if (val < 0 || val > INT_MAX)
+		return -1;
+
+	return (int)val;
+}
+
+static const char *fd_path_lookup(__u32 pid, int fd)
+{
+	struct fd_path_entry *it = fd_paths;
+
+	while (it) {
+		if (it->pid == pid && it->fd == fd)
+			return it->path;
+		it = it->next;
+	}
+
+	return NULL;
+}
+
+static void fd_path_set(__u32 pid, int fd, const char *path)
+{
+	struct fd_path_entry *it = fd_paths;
+	struct fd_path_entry *entry;
+
+	if (!path || !path[0] || fd < 0)
+		return;
+
+	while (it) {
+		if (it->pid == pid && it->fd == fd) {
+			snprintf(it->path, sizeof(it->path), "%s", path);
+			return;
+		}
+		it = it->next;
+	}
+
+	entry = calloc(1, sizeof(*entry));
+	if (!entry)
+		return;
+
+	entry->pid = pid;
+	entry->fd = fd;
+	snprintf(entry->path, sizeof(entry->path), "%s", path);
+	entry->next = fd_paths;
+	fd_paths = entry;
+}
+
+static void fd_path_del(__u32 pid, int fd)
+{
+	struct fd_path_entry **pp = &fd_paths;
+
+	while (*pp) {
+		if ((*pp)->pid == pid && (*pp)->fd == fd) {
+			struct fd_path_entry *victim = *pp;
+			*pp = victim->next;
+			free(victim);
+			return;
+		}
+		pp = &(*pp)->next;
+	}
+}
+
+static void fd_path_free_all(void)
+{
+	struct fd_path_entry *it = fd_paths;
+
+	while (it) {
+		struct fd_path_entry *next = it->next;
+		free(it);
+		it = next;
+	}
+	fd_paths = NULL;
+}
+
 const char *io_type_str(int type)
 {
 	switch (type) {
 	case IO_OPEN:
 		return "OPEN";
+	case IO_OPENAT:
+		return "OPENAT";
 	case IO_READ:
 		return "READ";
 	case IO_WRITE:
@@ -234,6 +370,16 @@ const char *io_type_str(int type)
 		return "MMAP2";
 	case IO_MUNMAP:
 		return "MUNMAP";
+	case IO_CREATE:
+		return "CREATE";
+	case IO_FALLOCATE:
+		return "FALLOCATE";
+	case IO_GETDENTS:
+		return "GETDENTS";
+	case IO_LOCK_FCNTL:
+		return "LOCK_FCNTL";
+	case IO_LOCK_FLOCK:
+		return "LOCK_FLOCK";
 	default:
 		return "UNKNOWN";
 	}
@@ -242,6 +388,10 @@ const char *io_type_str(int type)
 static int handle_event(void *ctx, void *data, size_t data_sz)
 {
 	struct io_event *e = data;
+	char args_disp[256];
+	const char *path_disp = e->fname;
+	const char *mapped_path;
+	int fd = -1;
 	struct tm *tm;
 	char ts[32];
 	time_t t;
@@ -253,14 +403,34 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 	tm = localtime(&t);
 	strftime(ts, sizeof(ts), "%H:%M:%S", tm);
 
+	if (e->args[0]) {
+		snprintf(args_disp, sizeof(args_disp), "%s", e->args);
+	} else {
+		snprintf(args_disp, sizeof(args_disp), "-");
+	}
+
+	if ((e->type == IO_OPEN || e->type == IO_OPENAT) && e->ret >= 0)
+		fd_path_set(e->pid, e->ret, e->fname);
+
+	fd = parse_fd_from_args(e->args);
+	if (fd >= 0 && is_fd_based_type(e->type)) {
+		snprintf(args_disp, sizeof(args_disp), "fd=%d", fd);
+		mapped_path = fd_path_lookup(e->pid, fd);
+		if (mapped_path)
+			path_disp = mapped_path;
+	}
+
 	printf("%-8s %-6d %-16s %-12s %6d %-30s %s\n",
 		ts,
 		e->pid,
 		e->comm,
 		io_type_str(e->type),
 		e->ret,
-		e->args[0] ? e->args : "-",
-		e->fname);
+		args_disp,
+		path_disp);
+
+	if (e->type == IO_CLOSE && fd >= 0)
+		fd_path_del(e->pid, fd);
 
 	return 0;
 }
@@ -269,6 +439,8 @@ int main(int argc, char **argv)
 {
 	struct iosnoop_bpf *skel;
 	struct ring_buffer *rb = NULL;
+	struct mount_filter_cfg filter_cfg = {};
+	__u32 zero = 0;
 	int err;
 
 	/* Unbuffered stdout so every event line reaches files/pipes immediately */
@@ -292,32 +464,41 @@ int main(int argc, char **argv)
 		goto cleanup;
 	}
 
+	/* Setup mount filtering if specified */
+	if (opts.mount_path) {
+		struct stat st;
+
+		if (!realpath(opts.mount_path, mount_path_resolved)) {
+			perror("realpath");
+			goto cleanup;
+		}
+
+		if (stat(mount_path_resolved, &st) < 0) {
+			perror("stat");
+			goto cleanup;
+		}
+		mount_dev_id = st.st_dev;
+
+		printf("Filtering by mount path: %s (dev: %lu)\n",
+			mount_path_resolved, (unsigned long)mount_dev_id);
+
+		filter_cfg.enabled = 1;
+		filter_cfg.dev_major = (__u32)major(mount_dev_id);
+		filter_cfg.dev_minor = (__u32)minor(mount_dev_id);
+		printf("Mount filter device components: major=%u minor=%u\n",
+			filter_cfg.dev_major, filter_cfg.dev_minor);
+		err = bpf_map_update_elem(bpf_map__fd(skel->maps.mount_filter_cfg),
+					  &zero, &filter_cfg, 0);
+		if (err < 0) {
+			fprintf(stderr, "Failed to configure mount filter: %d\n", err);
+			goto cleanup;
+		}
+	}
+
 	err = iosnoop_bpf__attach(skel);
 	if (err) {
 		fprintf(stderr, "Failed to attach BPF programs: %d\n", err);
 		goto cleanup;
-	}
-
-	/* Setup mount filtering if specified */
-	if (opts.mount_path) {
-		struct stat st;
-		__u32 dev_id = 0;
-		__u32 value = 1;
-
-		if (stat(opts.mount_path, &st) < 0) {
-			perror("stat");
-			goto cleanup;
-		}
-
-		dev_id = st.st_dev;
-		err = bpf_map_update_elem(bpf_map__fd(bpf_object__find_map_by_name(skel->obj, "mount_filter")),
-					  &dev_id, &value, 0);
-		if (err < 0) {
-			fprintf(stderr, "Failed to set mount filter: %d\n", err);
-			goto cleanup;
-		}
-
-		printf("Filtering by mount: %s (dev: %u)\n", opts.mount_path, dev_id);
 	}
 
 	rb = ring_buffer__new(bpf_map__fd(skel->maps.events), handle_event, NULL, NULL);
@@ -339,7 +520,7 @@ int main(int argc, char **argv)
 	time_t deadline = opts.duration ? time(NULL) + opts.duration : 0;
 
 	while (!exiting) {
-		err = ring_buffer__poll(rb, 100);
+		err = ring_buffer__poll(rb, 10);
 		if (err < 0 && err != -EINTR) {
 			fprintf(stderr, "Error polling ring buffer: %d\n", err);
 			break;
@@ -351,6 +532,7 @@ int main(int argc, char **argv)
 cleanup:
 	ring_buffer__free(rb);
 	iosnoop_bpf__destroy(skel);
+	fd_path_free_all();
 
 	return err < 0 ? 1 : 0;
 }

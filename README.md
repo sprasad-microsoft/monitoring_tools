@@ -65,6 +65,7 @@ src/
 ### SMB/CIFS Monitoring
 
 - **smbslower** — Trace slow SMB/CIFS operations with configurable latency threshold and command filtering.
+- **smbiosnoop** — Trace failed SMB2/SMB3 responses with command and NTSTATUS filtering.
 
 ### NFS Monitoring
 
@@ -91,6 +92,17 @@ sudo ./src/bin/smbslower -c 8,9         # trace only READ (0x08) and WRITE (0x09
 sudo ./src/bin/smbslower -x 13          # exclude ECHO commands
 sudo ./src/bin/smbslower -d 30          # trace for 30 seconds
 ```
+
+### smbiosnoop
+
+```bash
+sudo ./src/bin/smbiosnoop -c 5                  # all failed SMB2 CREATE requests
+sudo ./src/bin/smbiosnoop -e 0xc0000022         # STATUS_ACCESS_DENIED
+sudo ./src/bin/smbiosnoop -c 5 -e 0xc0000034    # missing-path CREATE failures
+```
+
+`smbiosnoop` emits only failed SMB2/SMB3 responses. Command values use SMB2 wire
+command IDs and errors use raw 32-bit NTSTATUS values in decimal or hexadecimal.
 
 ### nfsslower
 
