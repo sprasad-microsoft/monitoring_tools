@@ -783,4 +783,163 @@ int BPF_PROG(trace_vfs_lock_file_exit, struct file *filp, unsigned int cmd,
 	return 0;
 }
 
+#define DEFINE_KRETPROBE_FALLBACK(target, name) \
+	SEC("kretprobe/" #target) \
+	int BPF_KRETPROBE(name, long ret) \
+	{ \
+		finish_event(bpf_get_current_pid_tgid(), (__s32)ret); \
+		return 0; \
+	}
+
+SEC("kprobe/vfs_open")
+int BPF_KPROBE(trace_vfs_open_kprobe_fallback, struct path *path,
+	       struct file *file)
+{
+	return ____trace_vfs_open_enter((unsigned long long *)ctx, path, file);
+}
+DEFINE_KRETPROBE_FALLBACK(vfs_open, trace_vfs_open_kretprobe_fallback);
+
+SEC("kprobe/vfs_read")
+int BPF_KPROBE(trace_vfs_read_kprobe_fallback, struct file *file, char *buf,
+	       size_t count, loff_t *pos)
+{
+	return ____trace_vfs_read_enter((unsigned long long *)ctx, file, buf,
+				      count, pos);
+}
+DEFINE_KRETPROBE_FALLBACK(vfs_read, trace_vfs_read_kretprobe_fallback);
+
+SEC("kprobe/vfs_write")
+int BPF_KPROBE(trace_vfs_write_kprobe_fallback, struct file *file,
+	       const char *buf, size_t count, loff_t *pos)
+{
+	return ____trace_vfs_write_enter((unsigned long long *)ctx, file, buf,
+				       count, pos);
+}
+DEFINE_KRETPROBE_FALLBACK(vfs_write, trace_vfs_write_kretprobe_fallback);
+
+SEC("kprobe/vfs_create")
+int BPF_KPROBE(trace_vfs_create_kprobe_fallback, struct mnt_idmap *idmap,
+	       struct inode *dir, struct dentry *dentry, umode_t mode,
+	       bool want_excl)
+{
+	return ____trace_vfs_create_enter((unsigned long long *)ctx, idmap, dir,
+					dentry, mode, want_excl);
+}
+
+SEC("kprobe/vfs_create")
+int BPF_KPROBE(trace_vfs_create_legacy_fallback, struct mnt_idmap *idmap,
+	       struct inode *dir, struct dentry *dentry, umode_t mode)
+{
+	return ____trace_vfs_create_enter((unsigned long long *)ctx, idmap, dir,
+					dentry, mode, false);
+}
+DEFINE_KRETPROBE_FALLBACK(vfs_create, trace_vfs_create_kretprobe_fallback);
+
+SEC("kprobe/vfs_mkdir")
+int BPF_KPROBE(trace_vfs_mkdir_kprobe_fallback, struct mnt_idmap *idmap,
+	       struct inode *dir, struct dentry *dentry, umode_t mode)
+{
+	return ____trace_vfs_mkdir_enter((unsigned long long *)ctx, idmap, dir,
+				       dentry, mode);
+}
+DEFINE_KRETPROBE_FALLBACK(vfs_mkdir, trace_vfs_mkdir_kretprobe_fallback);
+
+SEC("kprobe/vfs_rmdir")
+int BPF_KPROBE(trace_vfs_rmdir_kprobe_fallback, struct mnt_idmap *idmap,
+	       struct inode *dir, struct dentry *dentry)
+{
+	return ____trace_vfs_rmdir_enter((unsigned long long *)ctx, idmap, dir,
+				       dentry);
+}
+DEFINE_KRETPROBE_FALLBACK(vfs_rmdir, trace_vfs_rmdir_kretprobe_fallback);
+
+SEC("kprobe/vfs_symlink")
+int BPF_KPROBE(trace_vfs_symlink_kprobe_fallback, struct mnt_idmap *idmap,
+	       struct inode *dir, struct dentry *dentry, const char *oldname)
+{
+	return ____trace_vfs_symlink_enter((unsigned long long *)ctx, idmap, dir,
+					 dentry, oldname);
+}
+DEFINE_KRETPROBE_FALLBACK(vfs_symlink, trace_vfs_symlink_kretprobe_fallback);
+
+SEC("kprobe/vfs_rename")
+int BPF_KPROBE(trace_vfs_rename_kprobe_fallback, struct renamedata *rd)
+{
+	return ____trace_vfs_rename_enter((unsigned long long *)ctx, rd);
+}
+DEFINE_KRETPROBE_FALLBACK(vfs_rename, trace_vfs_rename_kretprobe_fallback);
+
+SEC("kprobe/vfs_getattr")
+int BPF_KPROBE(trace_vfs_getattr_kprobe_fallback, const struct path *path,
+	       struct kstat *stat, u32 request_mask, unsigned int query_flags)
+{
+	return ____trace_vfs_getattr_enter((unsigned long long *)ctx, path, stat,
+					 request_mask, query_flags);
+}
+DEFINE_KRETPROBE_FALLBACK(vfs_getattr, trace_vfs_getattr_kretprobe_fallback);
+
+SEC("kprobe/vfs_truncate")
+int BPF_KPROBE(trace_vfs_truncate_kprobe_fallback, const struct path *path,
+	       loff_t length)
+{
+	return ____trace_vfs_truncate_enter((unsigned long long *)ctx, path,
+					  length);
+}
+DEFINE_KRETPROBE_FALLBACK(vfs_truncate, trace_vfs_truncate_kretprobe_fallback);
+
+SEC("kprobe/vfs_fchmod")
+int BPF_KPROBE(trace_vfs_fchmod_kprobe_fallback, struct file *file,
+	       umode_t mode)
+{
+	return ____trace_vfs_fchmod_enter((unsigned long long *)ctx, file, mode);
+}
+DEFINE_KRETPROBE_FALLBACK(vfs_fchmod, trace_vfs_fchmod_kretprobe_fallback);
+
+SEC("kprobe/vfs_readlink")
+int BPF_KPROBE(trace_vfs_readlink_kprobe_fallback, struct dentry *dentry,
+	       char *buffer, int buflen)
+{
+	return ____trace_vfs_readlink_enter((unsigned long long *)ctx, dentry,
+					 buffer, buflen);
+}
+DEFINE_KRETPROBE_FALLBACK(vfs_readlink, trace_vfs_readlink_kretprobe_fallback);
+
+SEC("kprobe/vfs_readv")
+int BPF_KPROBE(trace_vfs_readv_kprobe_fallback, struct file *file,
+	       const struct iovec *vec, unsigned long vlen, loff_t *pos,
+	       unsigned int flags)
+{
+	return ____trace_vfs_readv_enter((unsigned long long *)ctx, file, vec,
+				       vlen, pos, flags);
+}
+DEFINE_KRETPROBE_FALLBACK(vfs_readv, trace_vfs_readv_kretprobe_fallback);
+
+SEC("kprobe/vfs_writev")
+int BPF_KPROBE(trace_vfs_writev_kprobe_fallback, struct file *file,
+	       const struct iovec *vec, unsigned long vlen, loff_t *pos,
+	       unsigned int flags)
+{
+	return ____trace_vfs_writev_enter((unsigned long long *)ctx, file, vec,
+					vlen, pos, flags);
+}
+DEFINE_KRETPROBE_FALLBACK(vfs_writev, trace_vfs_writev_kretprobe_fallback);
+
+SEC("kprobe/iterate_dir")
+int BPF_KPROBE(trace_iterate_dir_kprobe_fallback, struct file *file,
+	       struct dir_context *dctx)
+{
+	return ____trace_iterate_dir_enter((unsigned long long *)ctx, file, dctx);
+}
+DEFINE_KRETPROBE_FALLBACK(iterate_dir, trace_iterate_dir_kretprobe_fallback);
+
+SEC("kprobe/vfs_lock_file")
+int BPF_KPROBE(trace_vfs_lock_file_kprobe_fallback, struct file *filp,
+	       unsigned int cmd, struct file_lock *fl, struct file_lock *conf)
+{
+	return ____trace_vfs_lock_file_enter((unsigned long long *)ctx, filp, cmd,
+					   fl, conf);
+}
+DEFINE_KRETPROBE_FALLBACK(vfs_lock_file,
+			  trace_vfs_lock_file_kretprobe_fallback);
+
 char LICENSE[] SEC("license") = "GPL";

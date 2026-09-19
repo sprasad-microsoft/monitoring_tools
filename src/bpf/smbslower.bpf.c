@@ -13,6 +13,36 @@ char LICENSE[] SEC("license") = "Dual BSD/GPL";
 const volatile __u64 min_lat_ns = 0;
 const volatile int wakeup_data_size = 256;
 
+struct smb3_cmd_done_args {
+	__u64 common_fields;
+	__u32 tid;
+	__u32 __pad1;
+	__u64 sesid;
+	__u16 cmd;
+	__u16 __pad2;
+	__u32 __pad3;
+	__u64 mid;
+};
+
+struct smb3_cmd_err_args {
+	__u64 common_fields;
+	__u32 tid;
+	__u32 __pad1;
+	__u64 sesid;
+	__u16 cmd;
+	__u16 __pad2;
+	__u32 __pad3;
+	__u64 mid;
+	__u32 status;
+	int rc;
+};
+
+struct smb_trace_key {
+	__u32 tid;
+	__u64 sesid;
+	__u64 mid;
+};
+
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__uint(max_entries, MAX_SMB_COMMANDS); /* SMB commands */
@@ -25,6 +55,13 @@ struct {
 	__type(key, struct mid_q_entry *);
 	__type(value, struct smb_partial_event);
 } temp SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, MAX_ENTRIES * 24);
+	__type(key, struct smb_trace_key);
+	__type(value, struct smb_partial_event);
+} trace_temp SEC(".maps");
 
 struct {
 	__uint(type, BPF_MAP_TYPE_RINGBUF);
@@ -56,15 +93,17 @@ static __always_inline long get_flags()
 static __always_inline int probe_exit(struct mid_q_entry *mid_struct)
 {
 	struct smb_partial_event *pe;
+	struct smb_partial_event partial;
 	struct event *e;
 
 	pe = bpf_map_lookup_elem(&temp, &mid_struct);
 	if (!pe) {
 		return 0;
 	}
+	partial = *pe;
 
 	__u64 now = bpf_ktime_get_ns();
-	__u64 latency = now - pe->metric.latency_ns;
+	__u64 latency = now - partial.metric.latency_ns;
 	bpf_map_delete_elem(&temp, &mid_struct);
 
 	if (latency < min_lat_ns) {
@@ -79,13 +118,93 @@ static __always_inline int probe_exit(struct mid_q_entry *mid_struct)
 	e->pid = bpf_get_current_pid_tgid() >> 32;
 	e->cmd_end_time_ns = now;
 	e->metric.latency_ns = latency;
-	e->rqst_id = pe->mid;
-	e->command = pe->smbcommand;
+	e->rqst_id = partial.mid;
+	e->command = partial.smbcommand;
 	e->tool = SMBSLOWER;
 	bpf_get_current_comm(&e->task, sizeof(e->task));
 	bpf_ringbuf_submit(e, get_flags());
 
 	return 0;
+}
+
+SEC("tracepoint/cifs/smb3_cmd_enter")
+int trace_smb3_cmd_enter(struct smb3_cmd_done_args *ctx)
+{
+	struct smb_trace_key key = {
+		.tid = ctx->tid,
+		.sesid = ctx->sesid,
+		.mid = ctx->mid,
+	};
+	struct smb_partial_event event = {
+		.smbcommand = ctx->cmd,
+	};
+
+	if (bpf_map_lookup_elem(&denylist, &event.smbcommand))
+		return 0;
+
+	event.metric.latency_ns = bpf_ktime_get_ns();
+	event.mid = ctx->mid;
+	bpf_map_update_elem(&trace_temp, &key, &event, BPF_ANY);
+	return 0;
+}
+
+static __always_inline int complete_trace_event(struct smb_trace_key *key)
+{
+	struct smb_partial_event *partial;
+	struct smb_partial_event completed;
+	struct event *event;
+	__u64 now;
+	__u64 latency;
+
+	partial = bpf_map_lookup_elem(&trace_temp, key);
+	if (!partial)
+		return 0;
+	completed = *partial;
+
+	now = bpf_ktime_get_ns();
+	latency = now - completed.metric.latency_ns;
+	bpf_map_delete_elem(&trace_temp, key);
+	if (latency < min_lat_ns)
+		return 0;
+
+	event = bpf_ringbuf_reserve(&aodrb, sizeof(*event), 0);
+	if (!event)
+		return 0;
+
+	event->pid = bpf_get_current_pid_tgid() >> 32;
+	event->cmd_end_time_ns = now;
+	event->metric.latency_ns = latency;
+	event->rqst_id = completed.mid;
+	event->command = completed.smbcommand;
+	event->tool = SMBSLOWER;
+	bpf_get_current_comm(&event->task, sizeof(event->task));
+	bpf_ringbuf_submit(event, get_flags());
+
+	return 0;
+}
+
+SEC("tracepoint/cifs/smb3_cmd_done")
+int trace_smb3_cmd_done(struct smb3_cmd_done_args *ctx)
+{
+	struct smb_trace_key key = {
+		.tid = ctx->tid,
+		.sesid = ctx->sesid,
+		.mid = ctx->mid,
+	};
+
+	return complete_trace_event(&key);
+}
+
+SEC("tracepoint/cifs/smb3_cmd_err")
+int trace_smb3_cmd_err(struct smb3_cmd_err_args *ctx)
+{
+	struct smb_trace_key key = {
+		.tid = ctx->tid,
+		.sesid = ctx->sesid,
+		.mid = ctx->mid,
+	};
+
+	return complete_trace_event(&key);
 }
 
 SEC("fexit/smb2_mid_entry_alloc")
