@@ -91,6 +91,7 @@ sudo ./src/bin/smbslower -m 50          # trace ops slower than 50ms
 sudo ./src/bin/smbslower -c 8,9         # trace only READ (0x08) and WRITE (0x09)
 sudo ./src/bin/smbslower -x 13          # exclude ECHO commands
 sudo ./src/bin/smbslower -d 30          # trace for 30 seconds
+sudo ./src/bin/smbslower --skip-tracepoints -v  # force function-probe fallbacks
 ```
 
 ### smbiosnoop

@@ -23,6 +23,7 @@
 
 static volatile sig_atomic_t exiting = 0;
 static bool verbose = false;
+static bool skip_tracepoints = false;
 
 static __u64 min_lat_ms = 10;
 static __u64 wakeup_data_size = 0; /* used to wake up the user space handler */
@@ -38,6 +39,7 @@ static const struct argp_option opts[] = {
 	{ "include-cmds", 'c', "INCLUDE", 0, "Allowed SMB commands to trace" },
 	{ "exclude-cmds", 'x', "EXCLUDE", 0, "SMB commands to exclude from tracing"},
 	{ "min", 'm', "MIN", 0, "Min latency to trace, in ms (default 10)" },
+	{ "skip-tracepoints", 1, NULL, 0, "Skip tracepoints and use function probes" },
 	{ "verbose", 'v', NULL, 0, "Enable verbose output" },
 	{ NULL, 'h', NULL, OPTION_HIDDEN, "Show the full help" },
 	{},
@@ -121,6 +123,9 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 	case 'v':
 		verbose = true;
 		break;
+	case 1:
+		skip_tracepoints = true;
+		break;
 	default:
 		return ARGP_ERR_UNKNOWN;
 	}
@@ -165,7 +170,7 @@ int main(int argc, char **argv)
 {
 	struct smbslower_bpf *skel;
 	int err, release_mid_params;
-	bool can_attach_fentry;
+	bool can_attach_fentry, use_tracepoints;
 
 	err = argp_parse(&argp, argc, argv, 0, NULL, NULL);
 	if (err) return err;
@@ -184,15 +189,36 @@ int main(int argc, char **argv)
 	skel->rodata->min_lat_ns = min_lat_ms * 1000 * 1000;
 	skel->rodata->wakeup_data_size = wakeup_data_size;
 
-	/* For mid_alloc: use fexit if fentry works, otherwise fall back to kretprobe */
-	if (fentry_can_attach("smb2_mid_entry_alloc", "cifs")) {
-		pr_info("Attaching to smb2_mid_entry_alloc with fexit\n");
+	use_tracepoints = !skip_tracepoints &&
+			  tracepoint_exists("cifs", "smb3_cmd_enter") &&
+			  tracepoint_exists("cifs", "smb3_cmd_done") &&
+			  tracepoint_exists("cifs", "smb3_cmd_err");
+	if (skip_tracepoints)
+		pr_info("Skipping CIFS tracepoints by request\n");
+	if (use_tracepoints) {
+		pr_info("Attaching to cifs:smb3_cmd_enter, smb3_cmd_done, and smb3_cmd_err\n");
+		bpf_program__set_autoload(skel->progs.mid_alloc_fexit, false);
+		bpf_program__set_autoattach(skel->progs.mid_alloc_fexit, false);
 		bpf_program__set_autoattach(skel->progs.mid_alloc_kretprobe, false);
 		bpf_program__set_autoload(skel->progs.mid_alloc_kretprobe, false);
 	} else {
-		pr_info("Attaching to smb2_mid_entry_alloc with kretprobe\n");
-		bpf_program__set_autoattach(skel->progs.mid_alloc_fexit, false);
-		bpf_program__set_autoload(skel->progs.mid_alloc_fexit, false);
+		bpf_program__set_autoload(skel->progs.trace_smb3_cmd_enter, false);
+		bpf_program__set_autoattach(skel->progs.trace_smb3_cmd_enter, false);
+		bpf_program__set_autoload(skel->progs.trace_smb3_cmd_done, false);
+		bpf_program__set_autoattach(skel->progs.trace_smb3_cmd_done, false);
+		bpf_program__set_autoload(skel->progs.trace_smb3_cmd_err, false);
+		bpf_program__set_autoattach(skel->progs.trace_smb3_cmd_err, false);
+
+		/* Use fexit if available, otherwise fall back to kretprobe. */
+		if (fentry_can_attach("smb2_mid_entry_alloc", "cifs")) {
+			pr_info("Attaching to smb2_mid_entry_alloc with fexit\n");
+			bpf_program__set_autoattach(skel->progs.mid_alloc_kretprobe, false);
+			bpf_program__set_autoload(skel->progs.mid_alloc_kretprobe, false);
+		} else {
+			pr_info("Attaching to smb2_mid_entry_alloc with kretprobe\n");
+			bpf_program__set_autoattach(skel->progs.mid_alloc_fexit, false);
+			bpf_program__set_autoload(skel->progs.mid_alloc_fexit, false);
+		}
 	}
 
 	/* For __release_mid: disable auto-attach and auto-load for all four variants,
@@ -210,9 +236,12 @@ int main(int argc, char **argv)
 	 * loading fentry programs with mismatched argument counts.
 	 * Use fentry if available, otherwise fall back to kprobe. */
 	release_mid_params = get_func_param_count("__release_mid", "cifs");
-	can_attach_fentry = fentry_can_attach("__release_mid", "cifs");
+	can_attach_fentry = !use_tracepoints &&
+			    fentry_can_attach("__release_mid", "cifs");
 
-	if (can_attach_fentry) {
+	if (use_tracepoints) {
+		pr_info("CIFS function probes disabled in favor of tracepoints\n");
+	} else if (can_attach_fentry) {
 		if (release_mid_params >= 2) {
 			pr_info("Attaching to __release_mid with fentry (server, mid)\n");
 			bpf_program__set_autoload(skel->progs.mid_release_direct_fentry, true);

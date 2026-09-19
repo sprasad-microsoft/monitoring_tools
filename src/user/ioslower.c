@@ -11,6 +11,7 @@
 #include <bpf/libbpf.h>
 #include <bpf/bpf.h>
 #include "ioslower.skel.h"
+#include "trace_helpers.c"
 
 /* Syscall types */
 #define SC_OPEN		1
@@ -300,6 +301,79 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 	return 0;
 }
 
+struct vfs_hook_spec {
+	const char *name;
+	int parameter_count;
+};
+
+static const struct vfs_hook_spec vfs_hooks[] = {
+	{ "vfs_open", 2 },
+	{ "vfs_read", 4 },
+	{ "vfs_write", 4 },
+	{ "vfs_create", 5 },
+	{ "vfs_mkdir", 4 },
+	{ "vfs_rmdir", 3 },
+	{ "vfs_symlink", 4 },
+	{ "vfs_rename", 1 },
+	{ "vfs_getattr", 4 },
+	{ "vfs_truncate", 2 },
+	{ "vfs_fchmod", 2 },
+	{ "vfs_readlink", 3 },
+	{ "vfs_readv", 5 },
+	{ "vfs_writev", 5 },
+	{ "iterate_dir", 2 },
+	{ "vfs_lock_file", 4 },
+};
+
+static bool vfs_fentry_family_supported(void)
+{
+	size_t index;
+
+	for (index = 0; index < sizeof(vfs_hooks) / sizeof(vfs_hooks[0]); index++) {
+		if (!fentry_can_attach(vfs_hooks[index].name, NULL) ||
+		    get_func_param_count(vfs_hooks[index].name, NULL) !=
+			    vfs_hooks[index].parameter_count)
+			return false;
+	}
+
+	return true;
+}
+
+static void select_vfs_hook_family(struct ioslower_bpf *skel)
+{
+	struct bpf_program *program;
+	bool use_fentry = vfs_fentry_family_supported();
+	bool legacy_vfs_create = get_func_param_count("vfs_create", NULL) == 4;
+
+	bpf_object__for_each_program(program, skel->obj) {
+		const char *name = bpf_program__name(program);
+		const char *section = bpf_program__section_name(program);
+		bool fentry_program = !strncmp(section, "fentry/", 7) ||
+				      !strncmp(section, "fexit/", 6);
+		bool fallback_program = strstr(name, "_fallback") != NULL;
+		bool legacy_program = strstr(name, "_legacy_fallback") != NULL;
+
+		if (fentry_program) {
+			bpf_program__set_autoload(program, use_fentry);
+			bpf_program__set_autoattach(program, use_fentry);
+		} else if (fallback_program) {
+			bool enable = !use_fentry;
+
+			if (strstr(name, "vfs_create_kprobe_fallback"))
+				enable = enable && !legacy_vfs_create;
+			else if (legacy_program)
+				enable = enable && legacy_vfs_create;
+			bpf_program__set_autoload(program, enable);
+			bpf_program__set_autoattach(program, enable);
+		}
+	}
+
+	if (use_fentry)
+		fprintf(stderr, "Using VFS fentry/fexit probes\n");
+	else
+		fprintf(stderr, "Using VFS kprobe/kretprobe fallbacks\n");
+}
+
 int main(int argc, char **argv)
 {
 	struct ioslower_bpf *skel;
@@ -322,6 +396,7 @@ int main(int argc, char **argv)
 		fprintf(stderr, "Failed to open BPF skeleton\n");
 		return 1;
 	}
+	select_vfs_hook_family(skel);
 
 	err = ioslower_bpf__load(skel);
 	if (err) {

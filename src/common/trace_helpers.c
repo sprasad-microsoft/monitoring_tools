@@ -4,6 +4,25 @@
 #include <string.h>
 #include <sys/utsname.h>
 #include <stdlib.h>
+#include <unistd.h>
+
+bool tracepoint_exists(const char *category, const char *name)
+{
+	char path[256];
+
+	if (snprintf(path, sizeof(path),
+		     "/sys/kernel/tracing/events/%s/%s/id",
+		     category, name) >= sizeof(path))
+		return false;
+	if (access(path, R_OK) == 0)
+		return true;
+
+	if (snprintf(path, sizeof(path),
+		     "/sys/kernel/debug/tracing/events/%s/%s/id",
+		     category, name) >= sizeof(path))
+		return false;
+	return access(path, R_OK) == 0;
+}
 
 static int get_module_btf(const char *mod, struct btf *vmlinux_btf,
 			  struct btf **module_btf)
