@@ -9,6 +9,8 @@
 #include <string.h>
 #include <unistd.h>
 #include <signal.h>
+#include <sys/wait.h>
+#include <sys/utsname.h>
 
 #include <bpf/libbpf.h>
 #include <bpf/bpf.h>
@@ -144,6 +146,64 @@ static int libbpf_print_fn(enum libbpf_print_level level, const char *format, va
 	return vfprintf(stderr, format, args);
 }
 
+static bool file_equals(const char *path, const char *expected)
+{
+	char value[128];
+	FILE *file = fopen(path, "r");
+
+	if (!file)
+		return false;
+	if (!fgets(value, sizeof(value), file)) {
+		fclose(file);
+		return false;
+	}
+	fclose(file);
+	value[strcspn(value, "\r\n")] = '\0';
+	return strcmp(value, expected) == 0;
+}
+
+static int run_modprobe(const char *path)
+{
+	pid_t pid, waited;
+	int status;
+
+	if (access(path, X_OK) != 0)
+		return -ENOENT;
+	pid = fork();
+	if (pid < 0)
+		return -errno;
+	if (pid == 0) {
+		execl(path, path, "cifs", (char *)NULL);
+		_exit(126);
+	}
+	do {
+		waited = waitpid(pid, &status, 0);
+	} while (waited < 0 && errno == EINTR);
+	if (waited < 0)
+		return -errno;
+	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
+		return -EIO;
+	return 0;
+}
+
+static int ensure_cifs_module_loaded(void)
+{
+	static const char *const modprobe_paths[] = {
+		"/usr/sbin/modprobe",
+		"/sbin/modprobe",
+	};
+	int err = -ENOENT;
+
+	if (access("/sys/module/cifs", F_OK) == 0)
+		return 0;
+	for (size_t i = 0; i < sizeof(modprobe_paths) / sizeof(modprobe_paths[0]); i++) {
+		err = run_modprobe(modprobe_paths[i]);
+		if (!err)
+			return 0;
+	}
+	return err;
+}
+
 static void sig_int(int signo)
 {
 	exiting = 1;
@@ -169,8 +229,14 @@ int update_denylist_map(struct smbslower_bpf *skel) {
 int main(int argc, char **argv)
 {
 	struct smbslower_bpf *skel;
+	struct bpf_program *release_prog;
+	const char *release_func = "__release_mid";
 	int err, release_mid_params;
-	bool can_attach_fentry, use_tracepoints;
+	bool can_attach_fentry, legacy_release = false;
+	bool rhel810_no_module_btf = false, rhel810_553_errata = false;
+	bool single_direct_release = false;
+	bool use_tracepoints;
+	struct utsname uts = {};
 
 	err = argp_parse(&argp, argc, argv, 0, NULL, NULL);
 	if (err) return err;
@@ -188,6 +254,10 @@ int main(int argc, char **argv)
 
 	skel->rodata->min_lat_ns = min_lat_ms * 1000 * 1000;
 	skel->rodata->wakeup_data_size = wakeup_data_size;
+	err = ensure_cifs_module_loaded();
+	if (err)
+		pr_info("Unable to load the CIFS module before probe inspection: %s\n",
+			strerror(-err));
 
 	use_tracepoints = !skip_tracepoints &&
 			  tracepoint_exists("cifs", "smb3_cmd_enter") &&
@@ -201,6 +271,10 @@ int main(int argc, char **argv)
 		bpf_program__set_autoattach(skel->progs.mid_alloc_fexit, false);
 		bpf_program__set_autoattach(skel->progs.mid_alloc_kretprobe, false);
 		bpf_program__set_autoload(skel->progs.mid_alloc_kretprobe, false);
+		bpf_program__set_autoload(skel->progs.mid_alloc_rhel810_kretprobe, false);
+		bpf_program__set_autoattach(skel->progs.mid_alloc_rhel810_kretprobe, false);
+		bpf_program__set_autoload(skel->progs.mid_alloc_rhel810_553_134_kretprobe, false);
+		bpf_program__set_autoattach(skel->progs.mid_alloc_rhel810_553_134_kretprobe, false);
 	} else {
 		bpf_program__set_autoload(skel->progs.trace_smb3_cmd_enter, false);
 		bpf_program__set_autoattach(skel->progs.trace_smb3_cmd_enter, false);
@@ -209,8 +283,59 @@ int main(int argc, char **argv)
 		bpf_program__set_autoload(skel->progs.trace_smb3_cmd_err, false);
 		bpf_program__set_autoattach(skel->progs.trace_smb3_cmd_err, false);
 
-		/* Use fexit if available, otherwise fall back to kretprobe. */
-		if (fentry_can_attach("smb2_mid_entry_alloc", "cifs")) {
+		bpf_program__set_autoload(skel->progs.mid_alloc_rhel810_kretprobe, false);
+		bpf_program__set_autoattach(skel->progs.mid_alloc_rhel810_kretprobe, false);
+		bpf_program__set_autoload(skel->progs.mid_alloc_rhel810_553_134_kretprobe, false);
+		bpf_program__set_autoattach(skel->progs.mid_alloc_rhel810_553_134_kretprobe, false);
+		/*
+		 * RHEL 8.10 omits BTF for cifs.ko, so libbpf cannot relocate
+		 * mid_q_entry fields for function probes. The matching BPF programs
+		 * use offsets verified from specific module binaries. Require both
+		 * uname release and cifs srcversion: release alone is insufficient
+		 * because errata kernels can ship different module layouts. Fail
+		 * closed for every unverified pair instead of guessing an ABI.
+		 */
+		if (access("/sys/kernel/btf/cifs", R_OK) != 0) {
+			if (uname(&uts) == 0 &&
+			    !strcmp(uts.release, "4.18.0-553.el8_10.x86_64") &&
+			    file_equals("/sys/module/cifs/srcversion",
+					"77983F3F095C933642E503B")) {
+				rhel810_no_module_btf = true;
+			} else if (uname(&uts) == 0 &&
+				   !strcmp(uts.release, "4.18.0-553.134.1.el8_10.x86_64") &&
+				   file_equals("/sys/module/cifs/srcversion",
+					       "E89B9572651524136F71AD9")) {
+				rhel810_no_module_btf = true;
+				rhel810_553_errata = true;
+			} else if (uname(&uts) == 0 &&
+				   !strcmp(uts.release, "4.18.0-553.164.1.el8_10.x86_64") &&
+				   file_equals("/sys/module/cifs/srcversion",
+					       "16DF298BB09E70BCC9C148F")) {
+				rhel810_no_module_btf = true;
+				rhel810_553_errata = true;
+			} else {
+				fprintf(stderr,
+					"CIFS module BTF is unavailable and kernel/module %s has no verified fixed layout\n",
+					uts.release[0] ? uts.release : "unknown");
+				err = -ENOTSUP;
+				goto cleanup;
+			}
+		}
+
+		if (rhel810_no_module_btf) {
+			pr_info("Attaching to smb2_mid_entry_alloc with verified RHEL 8.10 fixed-layout kretprobe\n");
+			bpf_program__set_autoload(skel->progs.mid_alloc_fexit, false);
+			bpf_program__set_autoattach(skel->progs.mid_alloc_fexit, false);
+			bpf_program__set_autoload(skel->progs.mid_alloc_kretprobe, false);
+			bpf_program__set_autoattach(skel->progs.mid_alloc_kretprobe, false);
+			if (rhel810_553_errata) {
+				bpf_program__set_autoload(skel->progs.mid_alloc_rhel810_553_134_kretprobe, true);
+				bpf_program__set_autoattach(skel->progs.mid_alloc_rhel810_553_134_kretprobe, true);
+			} else {
+				bpf_program__set_autoload(skel->progs.mid_alloc_rhel810_kretprobe, true);
+				bpf_program__set_autoattach(skel->progs.mid_alloc_rhel810_kretprobe, true);
+			}
+		} else if (fentry_can_attach("smb2_mid_entry_alloc", "cifs")) {
 			pr_info("Attaching to smb2_mid_entry_alloc with fexit\n");
 			bpf_program__set_autoattach(skel->progs.mid_alloc_kretprobe, false);
 			bpf_program__set_autoload(skel->progs.mid_alloc_kretprobe, false);
@@ -221,8 +346,16 @@ int main(int argc, char **argv)
 		}
 	}
 
-	/* For __release_mid: disable auto-attach and auto-load for all four variants,
-	 * we attach the correct one manually after load */
+	/*
+	 * CIFS release helpers changed name and prototype across upstream kernels
+	 * and enterprise backports: a kref argument, a direct mid argument, or a
+	 * server plus mid pair are all present in the supported matrix. Loading a
+	 * program with the wrong fentry prototype can be rejected by the verifier;
+	 * a kprobe with the wrong prototype can read the wrong register. Use module
+	 * BTF to determine the function and parameter count, then load exactly one
+	 * matching variant. RHEL 8.10 follows the separately guarded fixed-layout
+	 * path above because its cifs module has no BTF.
+	 */
 	bpf_program__set_autoload(skel->progs.mid_release_kref_fentry, false);
 	bpf_program__set_autoload(skel->progs.mid_release_kref_kprobe, false);
 	bpf_program__set_autoload(skel->progs.mid_release_direct_fentry, false);
@@ -231,36 +364,74 @@ int main(int argc, char **argv)
 	bpf_program__set_autoattach(skel->progs.mid_release_kref_kprobe, false);
 	bpf_program__set_autoattach(skel->progs.mid_release_direct_fentry, false);
 	bpf_program__set_autoattach(skel->progs.mid_release_direct_kprobe, false);
-
-	/* Detect __release_mid signature via kernel version to avoid
-	 * loading fentry programs with mismatched argument counts.
-	 * Use fentry if available, otherwise fall back to kprobe. */
-	release_mid_params = get_func_param_count("__release_mid", "cifs");
-	can_attach_fentry = !use_tracepoints &&
-			    fentry_can_attach("__release_mid", "cifs");
+	bpf_program__set_autoload(skel->progs.mid_release_legacy_fentry, false);
+	bpf_program__set_autoload(skel->progs.mid_release_legacy_kprobe, false);
+	bpf_program__set_autoload(skel->progs.mid_release_rhel810_kprobe, false);
+	bpf_program__set_autoload(skel->progs.mid_release_rhel810_553_134_kprobe, false);
+	bpf_program__set_autoload(skel->progs.mid_release_single_direct_fentry, false);
+	bpf_program__set_autoload(skel->progs.mid_release_single_direct_kprobe, false);
+	bpf_program__set_autoattach(skel->progs.mid_release_legacy_fentry, false);
+	bpf_program__set_autoattach(skel->progs.mid_release_legacy_kprobe, false);
+	bpf_program__set_autoattach(skel->progs.mid_release_rhel810_kprobe, false);
+	bpf_program__set_autoattach(skel->progs.mid_release_rhel810_553_134_kprobe, false);
+	bpf_program__set_autoattach(skel->progs.mid_release_single_direct_fentry, false);
+	bpf_program__set_autoattach(skel->progs.mid_release_single_direct_kprobe, false);
 
 	if (use_tracepoints) {
 		pr_info("CIFS function probes disabled in favor of tracepoints\n");
-	} else if (can_attach_fentry) {
-		if (release_mid_params >= 2) {
-			pr_info("Attaching to __release_mid with fentry (server, mid)\n");
-			bpf_program__set_autoload(skel->progs.mid_release_direct_fentry, true);
-			bpf_program__set_autoattach(skel->progs.mid_release_direct_fentry, true);
-		} else {
-			pr_info("Attaching to __release_mid with fentry (struct kref *)\n");
-			bpf_program__set_autoload(skel->progs.mid_release_kref_fentry, true);
-			bpf_program__set_autoattach(skel->progs.mid_release_kref_fentry, true);
-		}
 	} else {
-		if (release_mid_params >= 2) {
-			pr_info("Attaching to __release_mid with kprobe (server, mid)\n");
-			bpf_program__set_autoload(skel->progs.mid_release_direct_kprobe, true);
-			bpf_program__set_autoattach(skel->progs.mid_release_direct_kprobe, true);
+		if (rhel810_no_module_btf) {
+			release_func = rhel810_553_errata ? "__release_mid" :
+				"_cifs_mid_q_entry_release";
+			legacy_release = true;
+			release_mid_params = 1;
 		} else {
-			pr_info("Attaching to __release_mid with kprobe (struct kref *)\n");
-			bpf_program__set_autoload(skel->progs.mid_release_kref_kprobe, true);
-			bpf_program__set_autoattach(skel->progs.mid_release_kref_kprobe, true);
+			release_mid_params = get_func_param_count(release_func, "cifs");
 		}
+		if (release_mid_params == -ENOENT) {
+			release_func = "release_mid";
+			release_mid_params = get_func_param_count(release_func, "cifs");
+			single_direct_release = release_mid_params == 1;
+		}
+		if (release_mid_params == -ENOENT) {
+			release_func = "_cifs_mid_q_entry_release";
+			legacy_release = true;
+			release_mid_params = get_func_param_count(release_func, "cifs");
+		}
+		if ((release_mid_params != 1 && release_mid_params != 2) ||
+		    (legacy_release && release_mid_params != 1)) {
+			fprintf(stderr, "Unsupported CIFS release function %s: BTF parameter count %d\n",
+				release_func, release_mid_params);
+			err = -ENOTSUP;
+			goto cleanup;
+		}
+		can_attach_fentry = access("/sys/kernel/btf/cifs", R_OK) == 0 &&
+			fentry_can_attach(release_func, "cifs");
+		if (rhel810_no_module_btf) {
+			release_prog = rhel810_553_errata ?
+				skel->progs.mid_release_rhel810_553_134_kprobe :
+				skel->progs.mid_release_rhel810_kprobe;
+			can_attach_fentry = false;
+		} else if (single_direct_release) {
+			release_prog = can_attach_fentry ?
+				skel->progs.mid_release_single_direct_fentry :
+				skel->progs.mid_release_single_direct_kprobe;
+		} else if (legacy_release) {
+			release_prog = can_attach_fentry ? skel->progs.mid_release_legacy_fentry :
+				skel->progs.mid_release_legacy_kprobe;
+		} else if (release_mid_params == 2) {
+			release_prog = can_attach_fentry ? skel->progs.mid_release_direct_fentry :
+				skel->progs.mid_release_direct_kprobe;
+		} else {
+			release_prog = can_attach_fentry ? skel->progs.mid_release_kref_fentry :
+				skel->progs.mid_release_kref_kprobe;
+		}
+		pr_info("Attaching to %s with %s (%s)\n", release_func,
+			can_attach_fentry ? "fentry" : "kprobe",
+			release_mid_params == 2 ? "server, mid" :
+			single_direct_release ? "struct mid_q_entry *" : "struct kref *");
+		bpf_program__set_autoload(release_prog, true);
+		bpf_program__set_autoattach(release_prog, true);
 	}
 
 	err = smbslower_bpf__load(skel);

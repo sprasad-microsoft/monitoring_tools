@@ -41,7 +41,8 @@ class Event(ctypes.Structure):
 def assert_command(tool, args, expected_code, expected_text):
     """Run a CLI check and assert its exit status and combined output."""
     result = subprocess.run(
-        [tool, *args], capture_output=True, text=True, timeout=5
+        [tool, *args], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        universal_newlines=True, timeout=5
     )
     output = result.stdout + result.stderr
     if result.returncode != expected_code or expected_text not in output:
@@ -109,7 +110,7 @@ def test_cifs_error(tool, mount_path, timeout):
         [tool, "--cmds", str(SMB2_CREATE), "--wakeupsize", "0"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
-        text=True,
+        universal_newlines=True,
     )
 
     map_fd = -1

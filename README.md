@@ -2,6 +2,35 @@
 
 eBPF-based monitoring tools for tracing SMB/CIFS and NFS filesystem operations using libbpf CO-RE.
 
+## Supported Distributions
+
+The complete tool set is supported and runtime-validated on x86_64 Azure VMs
+running the following distributions:
+
+| Distribution | Supported release |
+| --- | --- |
+| Ubuntu | 22.04 LTS |
+| Ubuntu | 24.04 LTS |
+| Ubuntu | 26.04 LTS |
+| Azure Linux | 3 |
+| SUSE Linux Enterprise Server | 15 SP5 |
+| SUSE Linux Enterprise Server | 16 |
+| Red Hat Enterprise Linux | 8.10 |
+| Red Hat Enterprise Linux | 9 |
+
+Other distributions and kernel/module builds may work through the runtime BTF
+and tracepoint capability checks, but are not part of the validated support
+matrix. In particular, the `smbslower --skip-tracepoints` fallback on RHEL 8.10
+uses fixed CIFS structure offsets because that distribution does not publish
+`cifs.ko` BTF. This path is deliberately restricted to the exact kernel release
+and CIFS module `srcversion` combinations verified by the loader; an unknown
+RHEL 8.10 errata module fails rather than assuming a compatible layout. Normal
+SMB tracepoint operation does not require this fixed-layout fallback.
+
+RHEL 9 adds lazy-preemption metadata to raw tracepoint records. `nfsiosnoop`
+detects that field from tracefs and selects the matching record layout. It does
+not enable or configure lazy preemption.
+
 ## Prerequisites
 
 - Linux kernel with BTF support

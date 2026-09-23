@@ -199,7 +199,15 @@ static void select_vfs_hook_family(struct iosnoop_bpf *skel)
 {
 	struct bpf_program *program;
 	bool use_fentry = vfs_fentry_family_supported();
+	/*
+	 * Older enterprise kernels expose vfs_create with four arguments and
+	 * vfs_rename with six direct arguments. New kernels use five arguments
+	 * for vfs_create and a single struct renamedata for vfs_rename. This is
+	 * kernel ABI compatibility, not a distro-name check: select from BTF
+	 * parameter counts and do not load probes for symbols absent at runtime.
+	 */
 	bool legacy_vfs_create = get_func_param_count("vfs_create", NULL) == 4;
+	bool legacy_vfs_rename = get_func_param_count("vfs_rename", NULL) == 6;
 
 	bpf_object__for_each_program(program, skel->obj) {
 		const char *name = bpf_program__name(program);
@@ -220,8 +228,16 @@ static void select_vfs_hook_family(struct iosnoop_bpf *skel)
 			bpf_program__set_autoattach(program, use_fentry);
 		} else if (fallback_program) {
 			bool enable = !use_fentry;
+			const char *target = strchr(section, '/');
 
-			if (strstr(name, "vfs_create_kprobe_fallback"))
+			if (target && !kernel_function_exists(target + 1))
+				enable = false;
+
+			if (strstr(name, "vfs_rename_legacy_kprobe_fallback"))
+				enable = enable && legacy_vfs_rename;
+			else if (strstr(name, "vfs_rename_kprobe_fallback"))
+				enable = enable && !legacy_vfs_rename;
+			else if (strstr(name, "vfs_create_kprobe_fallback"))
 				enable = enable && !legacy_vfs_create;
 			else if (legacy_program)
 				enable = enable && legacy_vfs_create;

@@ -193,9 +193,42 @@ static int update_allowlist_errors(struct nfsiosnoop_bpf *skel) {
 	return 0;
 }
 
+/*
+ * Raw tracepoint field offsets include the architecture/kernel trace header.
+ * RHEL 9 exposes common_preempt_lazy_count in that header, shifting the NFS
+ * payload by four bytes. Since raw tracepoint contexts have no CO-RE field
+ * relocation, inspect the authoritative tracefs format and select the BPF
+ * program compiled for that layout. The helper only detects record layout; it
+ * neither tests whether lazy preemption is active nor changes scheduler state.
+ */
+static bool tracepoint_has_lazy_preempt(void)
+{
+	const char *paths[] = {
+		"/sys/kernel/tracing/events/nfs4/nfs4_xdr_status/format",
+		"/sys/kernel/debug/tracing/events/nfs4/nfs4_xdr_status/format",
+	};
+	char line[256];
+	FILE *file;
+
+	for (size_t i = 0; i < sizeof(paths) / sizeof(paths[0]); i++) {
+		file = fopen(paths[i], "r");
+		if (!file)
+			continue;
+		while (fgets(line, sizeof(line), file)) {
+			if (strstr(line, "common_preempt_lazy_count")) {
+				fclose(file);
+				return true;
+			}
+		}
+		fclose(file);
+	}
+	return false;
+}
+
 int main(int argc, char **argv)
 {
 	struct nfsiosnoop_bpf *skel;
+	bool lazy_preempt;
 	int err;
 
 	err = argp_parse(&argp, argc, argv, 0, NULL, NULL);
@@ -221,14 +254,35 @@ int main(int argc, char **argv)
 	skel->rodata->filter_errors = err_filter_set;
     skel->rodata->filter_cmds = cmd_filter_set;
 
-	if (fentry_can_attach("rpc_exit_task", "sunrpc")) {
-		pr_info("Attaching to rpc_exit_task with fentry\n");
+	if (tracepoint_exists("nfs4", "nfs4_xdr_status")) {
+		lazy_preempt = tracepoint_has_lazy_preempt();
+		pr_info("Attaching to nfs4:nfs4_xdr_status\n");
+		bpf_program__set_autoload(lazy_preempt ?
+			skel->progs.trace_nfs4_xdr_status :
+			skel->progs.trace_nfs4_xdr_status_lazy, false);
+		bpf_program__set_autoattach(lazy_preempt ?
+			skel->progs.trace_nfs4_xdr_status :
+			skel->progs.trace_nfs4_xdr_status_lazy, false);
+		bpf_program__set_autoload(skel->progs.rpc_done_exit, false);
+		bpf_program__set_autoattach(skel->progs.rpc_done_exit, false);
+		bpf_program__set_autoload(skel->progs.rpc_done_kprobe, false);
+		bpf_program__set_autoattach(skel->progs.rpc_done_kprobe, false);
+	} else if (fentry_can_attach("rpc_exit_task", "sunrpc")) {
+		pr_info("Attaching to rpc_exit_task with fexit\n");
+		bpf_program__set_autoload(skel->progs.trace_nfs4_xdr_status, false);
+		bpf_program__set_autoattach(skel->progs.trace_nfs4_xdr_status, false);
+		bpf_program__set_autoload(skel->progs.trace_nfs4_xdr_status_lazy, false);
+		bpf_program__set_autoattach(skel->progs.trace_nfs4_xdr_status_lazy, false);
 		bpf_program__set_autoload(skel->progs.rpc_done_kprobe, false);
 		bpf_program__set_autoattach(skel->progs.rpc_done_kprobe, false);
 	} else {
 		pr_info("Attaching to rpc_exit_task with kprobe\n");
-		bpf_program__set_autoload(skel->progs.rpc_done_entry, false);
-		bpf_program__set_autoattach(skel->progs.rpc_done_entry, false);
+		bpf_program__set_autoload(skel->progs.trace_nfs4_xdr_status, false);
+		bpf_program__set_autoattach(skel->progs.trace_nfs4_xdr_status, false);
+		bpf_program__set_autoload(skel->progs.trace_nfs4_xdr_status_lazy, false);
+		bpf_program__set_autoattach(skel->progs.trace_nfs4_xdr_status_lazy, false);
+		bpf_program__set_autoload(skel->progs.rpc_done_exit, false);
+		bpf_program__set_autoattach(skel->progs.rpc_done_exit, false);
 	}
 
 	err = nfsiosnoop_bpf__load(skel);

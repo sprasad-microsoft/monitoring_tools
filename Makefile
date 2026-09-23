@@ -19,6 +19,7 @@ INCLUDES := -Isrc/common/$(ARCH) -Isrc/common -I$(OUTPUT)
 CFLAGS := -g -Wall
 # Static-link libbpf + zlib, Dynamic-link libelf + libc/librt
 LIBS := -Wl,-Bstatic -l:libbpf.a -lz -Wl,-Bdynamic -lelf -lrt
+SHIM_LIBS ?= -lbpf
 
 # Clang system includes for BPF target
 CLANG_BPF_SYS_INCLUDES ?= $(shell $(CLANG) -v -E - </dev/null 2>&1 \
@@ -83,7 +84,7 @@ $(BINOUT)/%: src/user/%.c $(OUTPUT)/%.skel.h $(COMMON_SRCS) | $(BINOUT)
 # 4) Build ring buffer shim shared library (consumed by Python via ctypes)
 $(BINOUT)/libringbuf_shim.so: src/ringbuf_shim.c | $(BINOUT)
 	$(call msg,SO,$@)
-	$(Q)$(CC) -fPIC -shared -g -Wall $(INCLUDES) $< -o $@ -lbpf
+	$(Q)$(CC) -fPIC -shared -g -Wall $(INCLUDES) $< -o $@ $(SHIM_LIBS)
 
 # Keep intermediate files (.bpf.o, .skel.h)
 .SECONDARY:
