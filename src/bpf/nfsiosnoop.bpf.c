@@ -35,6 +35,39 @@ struct {
 	__uint(pinning, LIBBPF_PIN_BY_NAME);
 } aodrb SEC(".maps");
 
+/*
+ * Raw tracepoint contexts are not CO-RE relocated. Most kernels place the
+ * nfs4_xdr_status payload immediately after the standard 8-byte trace header,
+ * but RHEL 9 kernels with lazy preemption add
+ * common_preempt_lazy_count to the common header. The extra 4 bytes move every
+ * NFS field that follows it. Reading the normal layout on such a kernel makes
+ * xid, op, and error come from the wrong offsets and silently drops events at
+ * the allowlist filters.
+ *
+ * Keep both exact layouts here. The userspace loader reads the kernel-provided
+ * tracepoint format and enables only the matching program. This does not
+ * enable or otherwise interact with lazy preemption; it only accounts for the
+ * trace record metadata added by that kernel configuration.
+ */
+struct nfs4_xdr_status_args {
+    __u64 pad;
+    __u32 task_id;
+    __u32 client_id;
+    __u32 xid;
+    __u32 op;
+    unsigned long error;
+};
+
+struct nfs4_xdr_status_lazy_args {
+    __u64 pad;
+    __u32 common_preempt_lazy_count;
+    __u32 task_id;
+    __u32 client_id;
+    __u32 xid;
+    __u32 op;
+    unsigned long error;
+};
+
 static __always_inline long get_flags()
 {
 	long sz;
@@ -57,10 +90,12 @@ static int probe_entry(struct rpc_task *task)
     __u16 nfscommand;
     int retval;
 
-    retval = -BPF_CORE_READ(task, tk_status);
+    retval = BPF_CORE_READ(task, tk_status);
     if (retval == 0) {
         return 0; // only trace failed requests to keep noise down, can always add a flag to include successes later
     }
+	if (retval < 0)
+		retval = -retval;
 
     if (filter_errors) {
         __u8 *allowed_err = bpf_map_lookup_elem(&allowlist_errors, &retval);
@@ -93,9 +128,49 @@ static int probe_entry(struct rpc_task *task)
 
     return 0;
 }
+
+static __always_inline int emit_xdr_status(__u32 xid, __u16 command,
+					   unsigned long error)
+{
+    struct event *event;
+
+    if (!error)
+        return 0;
+    if (filter_errors &&
+        !bpf_map_lookup_elem(&allowlist_errors, &error))
+        return 0;
+    if (filter_cmds &&
+        !bpf_map_lookup_elem(&allowlist_cmds, &command))
+        return 0;
+
+    event = bpf_ringbuf_reserve(&aodrb, sizeof(*event), get_flags());
+    if (!event)
+        return 0;
+    event->pid = bpf_get_current_pid_tgid() >> 32;
+    event->cmd_end_time_ns = bpf_ktime_get_ns();
+    event->metric.retval = error;
+    event->rqst_id = xid;
+    event->command = command;
+    event->tool = NFSIOSNOOP;
+    bpf_get_current_comm(&event->task, sizeof(event->task));
+    bpf_ringbuf_submit(event, get_flags());
+    return 0;
+}
+
+SEC("tracepoint/nfs4/nfs4_xdr_status")
+int trace_nfs4_xdr_status(struct nfs4_xdr_status_args *ctx)
+{
+    return emit_xdr_status(ctx->xid, ctx->op, ctx->error);
+}
+
+SEC("tracepoint/nfs4/nfs4_xdr_status")
+int trace_nfs4_xdr_status_lazy(struct nfs4_xdr_status_lazy_args *ctx)
+{
+    return emit_xdr_status(ctx->xid, ctx->op, ctx->error);
+}
  
-SEC("fentry/rpc_exit_task")
-int BPF_PROG(rpc_done_entry, struct rpc_task *task)
+SEC("fexit/rpc_exit_task")
+int BPF_PROG(rpc_done_exit, struct rpc_task *task)
 {
 	return probe_entry(task);
 }

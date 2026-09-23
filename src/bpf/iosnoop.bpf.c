@@ -3,6 +3,11 @@
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 
+struct renamedata___legacy {
+	struct inode *new_dir;
+	struct dentry *new_dentry;
+} __attribute__((preserve_access_index));
+
 #define RINGBUF_SIZE (4 * 1024 * 1024)
 
 /* Event types */
@@ -850,15 +855,21 @@ int BPF_PROG(trace_vfs_rename_enter, struct renamedata *rd)
 	struct op_ctx op = {};
 	struct dentry *new_parent;
 	struct dentry *new_dentry;
+	struct inode *new_dir;
 
 	if (!rd)
 		return 0;
 
-	new_parent = BPF_CORE_READ(rd, new_parent);
 	new_dentry = BPF_CORE_READ(rd, new_dentry);
 
 	op.type = IO_RENAME;
-	op.dev = dev_from_dentry(new_parent);
+	if (bpf_core_field_exists(rd->new_parent)) {
+		new_parent = BPF_CORE_READ(rd, new_parent);
+		op.dev = dev_from_dentry(new_parent);
+	} else {
+		new_dir = BPF_CORE_READ((struct renamedata___legacy *)rd, new_dir);
+		op.dev = dev_from_inode(new_dir);
+	}
 	read_dentry_name(new_dentry, op.fname, sizeof(op.fname));
 	op.args[0] = '\0';
 	submit_or_drop(id, &op);
@@ -1324,6 +1335,25 @@ int BPF_KPROBE(trace_vfs_rename_kprobe_fallback, struct renamedata *rd)
 	return ____trace_vfs_rename_enter((unsigned long long *)ctx, rd);
 }
 DEFINE_KRETPROBE_FALLBACK(vfs_rename, trace_vfs_rename_kretprobe_fallback,
+			  IO_RENAME);
+
+SEC("kprobe/vfs_rename")
+int BPF_KPROBE(trace_vfs_rename_legacy_kprobe_fallback,
+	       struct inode *old_dir, struct dentry *old_dentry,
+	       struct inode *new_dir, struct dentry *new_dentry)
+{
+	__u64 id = bpf_get_current_pid_tgid();
+	struct op_ctx op = {};
+
+	op.type = IO_RENAME;
+	op.dev = dev_from_inode(new_dir);
+	read_dentry_name(new_dentry, op.fname, sizeof(op.fname));
+	op.args[0] = '\0';
+	submit_or_drop(id, &op);
+	return 0;
+}
+DEFINE_KRETPROBE_FALLBACK(vfs_rename,
+			  trace_vfs_rename_legacy_kretprobe_fallback,
 			  IO_RENAME);
 
 SEC("kprobe/vfs_getattr")

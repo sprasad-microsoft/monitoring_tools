@@ -78,17 +78,22 @@ static __always_inline long get_flags()
     return sz >= wakeup_data_size ? BPF_RB_FORCE_WAKEUP : BPF_RB_NO_WAKEUP;
 }
 
-/** Known issue: RHEL 8.10 running on the very old 4.18 kernel does not expose
- * module BTF. We cannot use CORE relocations, so we need to rely on raw offsets.
- * But, the mid_q_entry struct has changed across SMB versions. 
- * For now, the code is broken on RHEL 8.10, but should work on the newer azure
- * kernels. Using bpf_probe_read() does not suffice because ptr access of the mid
- * and command fields also emits CORE relocations.
- * One option is to rely on smb2_hdr because the header is always going to have a
- * fixed layout. But that involves having a kprobe+kretprobe on the same
- * smb2_mid_entry_alloc function.
- * PS: BTFHubArchive does not have cifs module BTF for 4.18.
+/*
+ * RHEL 8.10 provides vmlinux BTF but not BTF for cifs.ko. Consequently CO-RE
+ * cannot relocate mid_q_entry fields for the function-probe fallback used by
+ * --skip-tracepoints. These offsets were verified against the corresponding
+ * cifs.ko binaries; later 4.18.0-553 errata changed the mid_q_entry layout.
+ *
+ * Fixed offsets are intentionally not treated as a generic RHEL ABI. The
+ * userspace loader enables these programs only after matching both the exact
+ * uname release and cifs module srcversion. An unknown module is rejected
+ * rather than risking invalid reads or plausible but incorrect events.
  */
+#define RHEL_810_MID_OFFSET 32
+#define RHEL_810_COMMAND_OFFSET 124
+#define RHEL_810_REFCOUNT_OFFSET 16
+#define RHEL_810_553_134_MID_OFFSET 24
+#define RHEL_810_553_134_COMMAND_OFFSET 40
 
 static __always_inline int probe_exit(struct mid_q_entry *mid_struct)
 {
@@ -250,9 +255,50 @@ int BPF_KRETPROBE(mid_alloc_kretprobe)
 	return 0;
 }
 
-/* Pre-6.19: __release_mid(struct kref *refcount) */
-SEC("fentry/__release_mid")
-int BPF_PROG(mid_release_kref_fentry, struct kref *refcount) {
+SEC("kretprobe/smb2_mid_entry_alloc")
+int BPF_KRETPROBE(mid_alloc_rhel810_kretprobe)
+{
+	struct mid_q_entry *mid_struct = (struct mid_q_entry *)PT_REGS_RC(ctx);
+	struct smb_partial_event e = {};
+	__u16 cmd;
+
+	if (!mid_struct)
+		return 0;
+	bpf_probe_read_kernel(&cmd, sizeof(cmd),
+			      (char *)mid_struct + RHEL_810_COMMAND_OFFSET);
+	e.smbcommand = bpf_le16_to_cpu(cmd);
+	if (bpf_map_lookup_elem(&denylist, &e.smbcommand))
+		return 0;
+	e.metric.latency_ns = bpf_ktime_get_ns();
+	bpf_probe_read_kernel(&e.mid, sizeof(e.mid),
+			      (char *)mid_struct + RHEL_810_MID_OFFSET);
+	bpf_map_update_elem(&temp, &mid_struct, &e, BPF_NOEXIST);
+	return 0;
+}
+
+SEC("kretprobe/smb2_mid_entry_alloc")
+int BPF_KRETPROBE(mid_alloc_rhel810_553_134_kretprobe)
+{
+	struct mid_q_entry *mid_struct = (struct mid_q_entry *)PT_REGS_RC(ctx);
+	struct smb_partial_event e = {};
+	__u16 cmd;
+
+	if (!mid_struct)
+		return 0;
+	bpf_probe_read_kernel(&cmd, sizeof(cmd),
+			      (char *)mid_struct + RHEL_810_553_134_COMMAND_OFFSET);
+	e.smbcommand = bpf_le16_to_cpu(cmd);
+	if (bpf_map_lookup_elem(&denylist, &e.smbcommand))
+		return 0;
+	e.metric.latency_ns = bpf_ktime_get_ns();
+	bpf_probe_read_kernel(&e.mid, sizeof(e.mid),
+			      (char *)mid_struct + RHEL_810_553_134_MID_OFFSET);
+	bpf_map_update_elem(&temp, &mid_struct, &e, BPF_NOEXIST);
+	return 0;
+}
+
+static __always_inline int release_kref(struct kref *refcount)
+{
 	const typeof(((struct mid_q_entry *)0)->refcount) *__mptr =
 		(const typeof(((struct mid_q_entry *)0)->refcount) *)refcount;
 	struct mid_q_entry *mid_struct =
@@ -261,14 +307,50 @@ int BPF_PROG(mid_release_kref_fentry, struct kref *refcount) {
 	return probe_exit(mid_struct);
 }
 
+SEC("fentry/__release_mid")
+int BPF_PROG(mid_release_kref_fentry, struct kref *refcount) {
+	return release_kref(refcount);
+}
+
 SEC("kprobe/__release_mid")
-int BPF_PROG(mid_release_kref_kprobe, struct kref *refcount) {
-	const typeof(((struct mid_q_entry *)0)->refcount) *__mptr =
-		(const typeof(((struct mid_q_entry *)0)->refcount) *)refcount;
+int BPF_KPROBE(mid_release_kref_kprobe, struct kref *refcount) {
+	return release_kref(refcount);
+}
+
+SEC("fentry/_cifs_mid_q_entry_release")
+int BPF_PROG(mid_release_legacy_fentry, struct kref *refcount) {
+	return release_kref(refcount);
+}
+
+SEC("kprobe/_cifs_mid_q_entry_release")
+int BPF_KPROBE(mid_release_legacy_kprobe, struct kref *refcount) {
+	return release_kref(refcount);
+}
+
+SEC("kprobe/_cifs_mid_q_entry_release")
+int BPF_KPROBE(mid_release_rhel810_kprobe, struct kref *refcount) {
 	struct mid_q_entry *mid_struct =
-		(struct mid_q_entry *)((char *)__mptr - __builtin_offsetof(struct mid_q_entry, refcount));
+		(struct mid_q_entry *)((char *)refcount - RHEL_810_REFCOUNT_OFFSET);
 
 	return probe_exit(mid_struct);
+}
+
+SEC("kprobe/__release_mid")
+int BPF_KPROBE(mid_release_rhel810_553_134_kprobe, struct kref *refcount) {
+	struct mid_q_entry *mid_struct =
+		(struct mid_q_entry *)((char *)refcount - RHEL_810_REFCOUNT_OFFSET);
+
+	return probe_exit(mid_struct);
+}
+
+SEC("fentry/release_mid")
+int BPF_PROG(mid_release_single_direct_fentry, struct mid_q_entry *midEntry) {
+	return probe_exit(midEntry);
+}
+
+SEC("kprobe/release_mid")
+int BPF_KPROBE(mid_release_single_direct_kprobe, struct mid_q_entry *midEntry) {
+	return probe_exit(midEntry);
 }
 
 /* 6.19+: __release_mid(struct TCP_Server_Info *server, struct mid_q_entry *midEntry) */
@@ -278,6 +360,6 @@ int BPF_PROG(mid_release_direct_fentry, void *server, struct mid_q_entry *midEnt
 }
 
 SEC("kprobe/__release_mid")
-int BPF_PROG(mid_release_direct_kprobe, void *server, struct mid_q_entry *midEntry) {
+int BPF_KPROBE(mid_release_direct_kprobe, void *server, struct mid_q_entry *midEntry) {
 	return probe_exit(midEntry);
 }
